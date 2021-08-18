@@ -3,7 +3,7 @@ Learn about a network from a pcap file or reading from an interface
 
 # Quickstart
 - If you don't have pip3 installed, install it with
-```sudo apt install python3-pip```
+```sudo apt install python3-pip``` or ```sudo yum install python3-pip```
 - Install scapy with
 ```sudo pip3 install scapy```
 - Analyze a pcap file with
