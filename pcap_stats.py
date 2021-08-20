@@ -3,7 +3,7 @@
 
 
 
-__version__ = '0.0.18'
+__version__ = '0.0.20'
 
 __author__ = 'William Stearns'
 __copyright__ = 'Copyright 2021, William Stearns'
@@ -18,9 +18,14 @@ __status__ = 'Prototype'				#Prototype, Development or Production
 import os
 import sys
 import time
-#from scapy.all import *
-from scapy.all import ARP, Ether, ICMP, IP, IPv6, LLC, Scapy_Exception, STP, TCP, UDP, sniff				# pylint: disable=no-name-in-module
 
+try:
+	#from scapy.all import *
+	from scapy.all import ARP, Ether, ICMP, IP, IPv6, LLC, Scapy_Exception, STP, TCP, UDP, sniff				# pylint: disable=no-name-in-module
+except ImportError:
+	sys.stderr.write('Unable to load the scapy library.  Perhaps run   sudo apt install python3-pip || sudo yum install python3-pip ; sudo pip3 install scapy   ?\n')
+	sys.stderr.flush()
+	sys.exit(1)
 
 
 def debug_out(output_string):
@@ -396,46 +401,91 @@ def processpacket(p):
 		sys.exit(99)
 
 
-def print_stats(minimum_to_show):
+def hints_for(proto_desc, local_info):
+	"""For a given protocol, return the appropriate hint information to go in field 5 of the output."""
+
+	hint_return = ''
+
+	if proto_desc in hints:
+		hint_return = hints[proto_desc]
+	elif proto_desc.startswith(('ip4_169.254.',)):
+		hint_return = 'link_local/unable_to_get_address'
+	elif proto_desc.startswith(('ip6_fe80:')):
+		hint_return = 'link_local_address'
+	elif proto_desc.startswith(('ip4_10.', 'ip4_172.16.', 'ip4_172.17.', 'ip4_172.18.', 'ip4_172.19.', 'ip4_172.20.', 'ip4_172.21.', 'ip4_172.22.', 'ip4_172.23.', 'ip4_172.24.', 'ip4_172.25.', 'ip4_172.26.', 'ip4_172.27.', 'ip4_172.28.', 'ip4_172.29.', 'ip4_172.30.', 'ip4_172.31.', 'ip4_192.168.')):
+		hint_return = 'rfc1918/reserved'
+	elif proto_desc.startswith(('ip4_17.')):
+		hint_return = 'apple'
+	elif proto_desc.startswith(('ip4_73.')):
+		hint_return = 'comcast'
+	else:
+		hint_return = ''
+
+
+	if hint_return and local_info:
+		hint_return += ' ' + local_info
+	elif local_info:
+		hint_return = local_info
+
+
+	return hint_return
+
+
+def print_stats(mincount_to_show, minsize_to_show, out_format):
 	"""Show statistics"""
 
 	if "p_stats" in processpacket.__dict__:
+		if out_format == 'html':
+			print('<html>')
+			print('<head>')
+			print('<title>pcap_stats </title>')		#FIXME add "for (source)"
+			print('</head>')
+			print('<body>')
+			print('<table border=1>')
+			print('<tr><th colspan=6 bgcolor="#ffffff">Pcap Statistics</th></tr>')
+			print("<tr><th colspan=5>Begin_time: " + time.asctime(time.gmtime(processpacket.minstamp)) + ", End_time: " + time.asctime(time.gmtime(processpacket.maxstamp)) + ", Elapsed_time: " + str(processpacket.maxstamp - processpacket.minstamp) + " seconds</th></tr>")
+			print('<tr><th>Count</th><th>Bytes</th><th>Description</th><th>BPF expression</th><th>Hint</th></tr>')
+
+			#print(processpacket.p_stats)
+			#print("Local_IPs: " + str(sorted(processpacket.local_ips)))
+
+
+		elif out_format == 'ascii':
+			print("Begin_time: " + time.asctime(time.gmtime(processpacket.minstamp)))
+			print("End_time: " + time.asctime(time.gmtime(processpacket.maxstamp)))
+			print("Elapsed_time: " + str(processpacket.maxstamp - processpacket.minstamp))
+
+
+
 		for one_key in sorted(processpacket.p_stats.keys()):
-			if processpacket.p_stats[one_key][0] > minimum_to_show:
+			if processpacket.p_stats[one_key][0] >= mincount_to_show and processpacket.p_stats[one_key][1] >= minsize_to_show:
 				desc = one_key.replace(' ', '_')
 				orig_ip = desc.replace('ip4_', '').replace('ip6_', '')
 				is_local = ''
 				if orig_ip in processpacket.local_ips:
-					is_local = ' local'
+					is_local = 'local'
 
 					for one_mac in processpacket.ipv4s_for_mac.keys():
 						if orig_ip in processpacket.ipv4s_for_mac[one_mac] and len(processpacket.ipv4s_for_mac[one_mac]) > 1:
-							is_local = ' local ipv4router' + ' ' + str(processpacket.ipv4s_for_mac[one_mac])
+							is_local = 'local ipv4router ' + str(processpacket.ipv4s_for_mac[one_mac])
 
-				if desc in hints:
-					print("{0:>10d} {1:>13d} {2:60s} {3:48s} {4:30s}".format(processpacket.p_stats[one_key][0], processpacket.p_stats[one_key][1], desc, processpacket.field_filter.get(one_key, ''), hints[desc] + is_local))
-				elif desc.startswith(('ip4_169.254.',)):
-					print("{0:>10d} {1:>13d} {2:60s} {3:48s} {4:30s}".format(processpacket.p_stats[one_key][0], processpacket.p_stats[one_key][1], desc, processpacket.field_filter.get(one_key, ''), 'link_local/unable_to_get_address' + is_local))
-				elif desc.startswith(('ip6_fe80:')):
-					print("{0:>10d} {1:>13d} {2:60s} {3:48s} {4:30s}".format(processpacket.p_stats[one_key][0], processpacket.p_stats[one_key][1], desc, processpacket.field_filter.get(one_key, ''), 'link_local_address' + is_local))
-				elif desc.startswith(('ip4_10.', 'ip4_172.16.', 'ip4_172.17.', 'ip4_172.18.', 'ip4_172.19.', 'ip4_172.20.', 'ip4_172.21.', 'ip4_172.22.', 'ip4_172.23.', 'ip4_172.24.', 'ip4_172.25.', 'ip4_172.26.', 'ip4_172.27.', 'ip4_172.28.', 'ip4_172.29.', 'ip4_172.30.', 'ip4_172.31.', 'ip4_192.168.')):
-					print("{0:>10d} {1:>13d} {2:60s} {3:48s} {4:30s}".format(processpacket.p_stats[one_key][0], processpacket.p_stats[one_key][1], desc, processpacket.field_filter.get(one_key, ''), 'rfc1918/reserved' + is_local))
-				elif desc.startswith(('ip4_17.')):
-					print("{0:>10d} {1:>13d} {2:60s} {3:48s} {4:30s}".format(processpacket.p_stats[one_key][0], processpacket.p_stats[one_key][1], desc, processpacket.field_filter.get(one_key, ''), 'apple' + is_local))
-				elif desc.startswith(('ip4_73.')):
-					print("{0:>10d} {1:>13d} {2:60s} {3:48s} {4:30s}".format(processpacket.p_stats[one_key][0], processpacket.p_stats[one_key][1], desc, processpacket.field_filter.get(one_key, ''), 'comcast' + is_local))
-				else:
-					print("{0:>10d} {1:>13d} {2:60s} {3:48s} {4:30s}".format(processpacket.p_stats[one_key][0], processpacket.p_stats[one_key][1], desc, processpacket.field_filter.get(one_key, ''), is_local))
+				if out_format == 'html':
+					print("<tr><td align=right>{0:}</td><td align=right>{1}</td><td>{2}</td><td>{3}</td><td>{4}</td></tr>".format(processpacket.p_stats[one_key][0], processpacket.p_stats[one_key][1], desc, processpacket.field_filter.get(one_key, ''), hints_for(desc, is_local)))
+				elif out_format == 'ascii':
+					print("{0:>10d} {1:>13d} {2:60s} {3:48s} {4:30s}".format(processpacket.p_stats[one_key][0], processpacket.p_stats[one_key][1], desc, processpacket.field_filter.get(one_key, ''), hints_for(desc, is_local)))
+		if out_format == 'html':
+			print('</table>')
 
-		#print(processpacket.p_stats)
-		print("Local_IPs: " + str(sorted(processpacket.local_ips)))
 
-		#print(processpacket.minstamp)
-		print("T_Begin: " + time.asctime(time.gmtime(processpacket.minstamp)))
-		#print(processpacket.maxstamp)
-		print("T_End: " + time.asctime(time.gmtime(processpacket.maxstamp)))
+		if out_format == 'html':
+			print('</body></html>')
+	else:
+		sys.stderr.write('It does not appear any packets were read.  Exiting.\n')
+		sys.stderr.flush()
 
-		print("T_Elapsed: " + str(processpacket.maxstamp - processpacket.minstamp))
+
+
+
 
 
 hints = {'TCP_FLAGS_': 'Invalid/no_tcp_flags', 'TCP_FLAGS_SR': 'Invalid/syn_and_rst', 'TCP_FLAGS_FRA': 'Invalid/fin_and_rst', 'TCP_FLAGS_FSPEC': 'Invalid/fin_and_syn', 'TCP_FLAGS_FSPU': 'Invalid/fin_and_syn', 'TCP_FLAGS_FSRPAU': 'Invalid/fin_and_syn_and_rst', 'TCP_FLAGS_FSRPAUEN': 'Invalid/fin_and_syn_and_rst_christmas_tree',
@@ -508,7 +558,8 @@ if __name__ == '__main__':
 	parser.add_argument('-c', '--count', help='Number of packets to sniff (if not specified, sniff forever/until end of pcap file)', type=int, required=False, default=None)
 	parser.add_argument('-m', '--mincount', help='Only show a record if we have seen it this many times (default: %(default)s)', type=int, required=False, default=0)
 	parser.add_argument('-s', '--minsize', help='Only show a record if have this many total bytes (default: %(default)s)', type=int, required=False, default=0)
-	parser.add_argument('-l', '--length', help='Which form of length to use (default: %(default)s)', choices=('ip'), required=False, default='ip')		#Reinstate this when the length function accepts them:   , choices=('ip', 'layer', 'payload')
+	parser.add_argument('-l', '--length', help='Which form of length to use (default: %(default)s)', choices=('ip',), required=False, default='ip')		#Reinstate this when the length function accepts them:   , choices=('ip', 'layer', 'payload')
+	parser.add_argument('-f', '--format', help='Output format (default: %(default)s)', choices=('ascii', 'html'), required=False, default='ascii')
 	(parsed, unparsed) = parser.parse_known_args()
 	cl_args = vars(parsed)
 
@@ -543,4 +594,4 @@ if __name__ == '__main__':
 	except KeyboardInterrupt:
 		pass
 
-	print_stats(cl_args['mincount'])
+	print_stats(cl_args['mincount'], cl_args['minsize'], cl_args['format'])
