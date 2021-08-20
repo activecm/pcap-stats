@@ -11,5 +11,5 @@ Learn about a network from a pcap file or reading from an interface
 - Analyze packets coming in on a network interface with
 ```sudo ./pcap_stats.py -i eth0 -c 10000 | less -S```
 - To create an HTML page of output
-```./pcap_stats.py -r pcap_file_name.pcap &gt;pcap_stats.html```
+```./pcap_stats.py -r pcap_file_name.pcap >pcap_stats.html```
 - To see the other available options, run ```./pcap_stats.py -h```
