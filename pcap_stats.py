@@ -3,7 +3,7 @@
 
 
 
-__version__ = '0.0.20'
+__version__ = '0.0.25'
 
 __author__ = 'William Stearns'
 __copyright__ = 'Copyright 2021, William Stearns'
@@ -96,8 +96,8 @@ def processpacket(p):
 		processpacket.p_stats = {'count': [0, 0]}
 
 	if "field_filter" not in processpacket.__dict__:
-		processpacket.field_filter = {'count': '', 'ARP': 'arp', 'ESP': 'ip proto esp', 'IP': 'ip', 'ICMP': 'icmp', 'IPv6': 'ip6', 'TCP': 'tcp', 'UDP': 'udp', '802.1Q': 'vlan',
-		'TCP_FLAGS_': 'tcp[12:2] & 0x01ff = 0x0000', 'TCP_FLAGS_S': 'tcp[12:2] & 0x01ff = 0x0002', 'TCP_FLAGS_R': 'tcp[12:2] & 0x01ff = 0x0004', 'TCP_FLAGS_SR': 'tcp[12:2] & 0x01ff = 0x0006', 'TCP_FLAGS_RP': 'tcp[12:2] & 0x01ff = 0x000C',
+		processpacket.field_filter = {'count': '', 'ARP': 'arp', 'DNS': 'port 53 or udp port 5353 or udp port 5355', 'ESP': 'ip proto esp', 'IP': 'ip', 'ICMP': 'icmp', 'IPv6': 'ip6', 'TCP': 'tcp', 'UDP': 'udp', '802.1Q': 'vlan',
+		'TCP_FLAGS_': 'tcp[12:2] & 0x01ff = 0x0000', 'TCP_FLAGS_F': 'tcp[12:2] & 0x01ff = 0x0001', 'TCP_FLAGS_S': 'tcp[12:2] & 0x01ff = 0x0002', 'TCP_FLAGS_R': 'tcp[12:2] & 0x01ff = 0x0004', 'TCP_FLAGS_SR': 'tcp[12:2] & 0x01ff = 0x0006', 'TCP_FLAGS_RP': 'tcp[12:2] & 0x01ff = 0x000C',
 		'TCP_FLAGS_A': 'tcp[12:2] & 0x01ff = 0x0010', 'TCP_FLAGS_FA': 'tcp[12:2] & 0x01ff = 0x0011', 'TCP_FLAGS_SA': 'tcp[12:2] & 0x01ff = 0x0012', 'TCP_FLAGS_RA': 'tcp[12:2] & 0x01ff = 0x0014', 'TCP_FLAGS_FRA': 'tcp[12:2] & 0x01ff = 0x0015', 'TCP_FLAGS_PA': 'tcp[12:2] & 0x01ff = 0x0018', 'TCP_FLAGS_FPA': 'tcp[12:2] & 0x01ff = 0x0019', 'TCP_FLAGS_RPA': 'tcp[12:2] & 0x01ff = 0x001C',
 		'TCP_FLAGS_U': 'tcp[12:2] & 0x01ff = 0x0020', 'TCP_FLAGS_SU': 'tcp[12:2] & 0x01ff = 0x0022', 'TCP_FLAGS_FPU': 'tcp[12:2] & 0x01ff = 0x0029', 'TCP_FLAGS_FSPU': 'tcp[12:2] & 0x01ff = 0x002b',
 		'TCP_FLAGS_SAU': 'tcp[12:2] & 0x01ff = 0x0032', 'TCP_FLAGS_FSRPAU': 'tcp[12:2] & 0x01ff = 0x003f',
@@ -431,18 +431,18 @@ def hints_for(proto_desc, local_info):
 	return hint_return
 
 
-def print_stats(mincount_to_show, minsize_to_show, out_format):
+def print_stats(mincount_to_show, minsize_to_show, out_format, source_string):
 	"""Show statistics"""
 
 	if "p_stats" in processpacket.__dict__:
 		if out_format == 'html':
 			print('<html>')
 			print('<head>')
-			print('<title>pcap_stats </title>')		#FIXME add "for (source)"
+			print('<title>pcap_stats for ' + source_string + '</title>')
 			print('</head>')
 			print('<body>')
 			print('<table border=1>')
-			print('<tr><th colspan=6 bgcolor="#ffffff">Pcap Statistics</th></tr>')
+			print('<tr><th colspan=6 bgcolor="#ffffff">Pcap Statistics for ' + source_string + '</th></tr>')
 			print("<tr><th colspan=5>Begin_time: " + time.asctime(time.gmtime(processpacket.minstamp)) + ", End_time: " + time.asctime(time.gmtime(processpacket.maxstamp)) + ", Elapsed_time: " + str(processpacket.maxstamp - processpacket.minstamp) + " seconds</th></tr>")
 			print('<tr><th>Count</th><th>Bytes</th><th>Description</th><th>BPF expression</th><th>Hint</th></tr>')
 
@@ -494,10 +494,11 @@ hints = {'TCP_FLAGS_': 'Invalid/no_tcp_flags', 'TCP_FLAGS_SR': 'Invalid/syn_and_
          'icmp_5.0': 'redirect/net', 'icmp_5.1': 'redirect/host', 'icmp_5.2': 'redirect/tos_and_net', 'icmp_5.3': 'redirect/tos_and_host',
          'icmp_8.0': 'echo_request',
          'icmp_9.0': 'router_advertisement/normal',
-         'icmp_11.0': 'time_exceeded/TTL',
+         'icmp_11.0': 'time_exceeded/TTL', 'icmp_11.1': 'time_exceeded/frag_reassembly_time_exceeded',
          'icmp_13.0': 'timestamp',
          'icmp_14.0': 'timestamp_reply',
-         'ip4_0.0.0.0': 'address_unspecified', 'ip4_1.1.1.1': 'public_dns/cloudflare', 'ip4_127.0.0.1': 'localhost', 'ip4_8.8.4.4': 'public_dns/google', 'ip4_8.8.8.8': 'public_dns/google', 'ip4_224.0.0.1': 'all_systems_on_this_subnet', 'ip4_224.0.0.2': 'all_routers_on_this_subnet', 'ip4_224.0.0.13': 'all_pim_routers', 'ip4_224.0.0.22': 'multicast/IGMP', 'ip4_224.0.0.251': 'multicast/mDNS', 'ip4_224.0.0.252': 'multicast/LLMNR', 'ip4_224.0.1.40': 'multicast/cisco_rp_discovery', 'ip4_224.0.1.60': 'multicast/hp_device_discovery', 'ip4_239.255.255.250': 'multicast/uPNP_or_SSDP', 'ip4_255.255.255.255': 'broadcast',
+         'ip4_0.0.0.0': 'address_unspecified', 'ip4_1.1.1.1': 'public_dns/cloudflare', 'ip4_127.0.0.1': 'localhost', 'ip4_8.8.4.4': 'public_dns/google', 'ip4_8.8.8.8': 'public_dns/google', 'ip4_75.75.75.75': 'public_dns/cdns01.comcast.net', 'ip4_75.75.76.76': 'public_dns/cdns02.comcast.net', 'ip4_224.0.0.1': 'all_systems_on_this_subnet', 'ip4_224.0.0.2': 'all_routers_on_this_subnet', 'ip4_224.0.0.13': 'all_pim_routers', 'ip4_224.0.0.22': 'multicast/IGMP', 'ip4_224.0.0.251': 'multicast/mDNS', 'ip4_224.0.0.252': 'multicast/LLMNR', 'ip4_224.0.1.40': 'multicast/cisco_rp_discovery', 'ip4_224.0.1.60': 'multicast/hp_device_discovery', 'ip4_239.255.255.250': 'multicast/uPNP_or_SSDP', 'ip4_255.255.255.255': 'broadcast',
+         'ip6_2001:558:feed::1': 'public_dns/cdns01.comcast.net', 'ip6_2001:558:feed::2': 'public_dns/cdns02.comcast.net',
          'ip6_::': 'address_unspecified', 'ip6_::1': 'localhost', 'ip6_ff02::1': 'multicast/all_nodes', 'ip6_ff02::2': 'multicast/all_routers', 'ip6_ff02::c': 'multicast/ssdp', 'ip6_ff02::16': 'multicast/MLDv2_capable_routers', 'ip6_ff02::fb': 'multicast/mDNSv6', 'ip6_ff02::1:2': 'multicast/DHCP_Relay_Agents_and_Servers', 'ip6_ff02::1:3': 'multicast/LLMNR',
          'proto_2': 'igmp', 'proto_47': 'gre', 'proto_50': 'esp', 'proto_51': 'ah', 'proto_103': 'pim',
          'udp_7': 'echo', 'udp_17': 'qotd', 'udp_19': 'chargen', 'udp_53': 'dns', 'udp_67': 'bootp/dhcp', 'udp_69': 'tftp', 'udp_88': 'kerberos',
@@ -507,13 +508,13 @@ hints = {'TCP_FLAGS_': 'Invalid/no_tcp_flags', 'TCP_FLAGS_SR': 'Invalid/syn_and_
          'udp_500': 'isakmp/ike', 'udp_514': 'syslog', 'udp_520': 'rip', 'udp_546': 'dhcpv6_client', 'udp_547': 'dhcpv6',
          'udp_1194': 'openvpn',
          'udp_1434': 'mssql_monitor', 'udp_1900': 'ssdp/upnp',
-         'udp_3389': 'remote_desktop_protocol', 'udp_3702': 'web_services_discovery',
-         'udp_4500': 'ipsec_nat_traversal', 'udp_4789': 'vxlan',
-         'udp_5060': 'sip', 'udp_5353': 'mDNS', 'udp_5355': 'LLMNR', 'udp_5938': 'teamviewer',
+         'udp_3389': 'remote_desktop_protocol', 'udp_3478': 'webrtc', 'udp_3702': 'web_services_discovery',
+         'udp_4500': 'ipsec_nat_traversal', 'udp_4501': 'globalprotect_vpn', 'udp_4789': 'vxlan',
+         'udp_5002': 'drobo_discovery', 'udp_5060': 'sip', 'udp_5353': 'mDNS', 'udp_5355': 'LLMNR', 'udp_5938': 'teamviewer',
          'udp_17500': 'dropbox_lan_sync',
          'udp_19305': 'google_meet',
          'tcp_7': 'echo', 'tcp_11': 'systat', 'tcp_19': 'chargen', 'tcp_20': 'ftp-data', 'tcp_21': 'ftp', 'tcp_22': 'ssh', 'tcp_23': 'telnet', 'tcp_25': 'smtp', 'tcp_43': 'whois', 'tcp_53': 'dns', 'tcp_79': 'finger', 'tcp_80': 'http', 'tcp_88': 'kerberos',
-         'tcp_109': 'pop2', 'tcp_110': 'pop3', 'tcp_111': 'rpc', 'tcp_113': 'ident/auth', 'tcp_135': 'ms_rpc_endpoint_mapper', 'tcp_143': 'imap', 'tcp_179': 'bgp',
+         'tcp_109': 'pop2', 'tcp_110': 'pop3', 'tcp_111': 'rpc', 'tcp_113': 'ident/auth', 'tcp_135': 'ms_rpc_endpoint_mapper', 'tcp_139': 'netbios/session', 'tcp_143': 'imap', 'tcp_179': 'bgp',
          'tcp_389': 'ldap',
          'tcp_443': 'https', 'tcp_445': 'microsoft-ds', 'tcp_465': 'smtps',
          'tcp_587': 'smtp/msa',
@@ -522,8 +523,8 @@ hints = {'TCP_FLAGS_': 'Invalid/no_tcp_flags', 'TCP_FLAGS_SR': 'Invalid/syn_and_
          'tcp_1194': 'openvpn',
          'tcp_1433': 'mssql', 'tcp_1434': 'mssql_monitor',
          'tcp_1723': 'pptp',
-         'tcp_1984': 'bigbrother',
-         'tcp_3128': 'squid_proxy', 'tcp_3306': 'mysql', 'tcp_3389': 'remote_desktop_protocol',
+         'tcp_1935': 'rtmp', 'tcp_1984': 'bigbrother',
+         'tcp_3128': 'squid_proxy', 'tcp_3306': 'mysql', 'tcp_3389': 'remote_desktop_protocol', 'tcp_3478': 'webrtc',
          'tcp_5223': 'apple_push_notification', 'tcp_5060': 'sip', 'tcp_5900': 'remote_framebuffer', 'tcp_5938': 'teamviewer',
          'tcp_6379': 'redis',
          'tcp_8008': 'apple_ical', 'tcp_8333': 'bitcoin',
@@ -563,8 +564,11 @@ if __name__ == '__main__':
 	(parsed, unparsed) = parser.parse_known_args()
 	cl_args = vars(parsed)
 
+	data_source = 'unknown'
+
 	try:
 		if cl_args['interface']:
+			data_source = str(cl_args['interface'])
 			try:
 				if cl_args['count']:
 					sniff(store=0, iface=cl_args['interface'], filter=cl_args['bpf'], count=cl_args['count'], prn=lambda x: processpacket(x))	# pylint: disable=unnecessary-lambda
@@ -575,6 +579,7 @@ if __name__ == '__main__':
 			sys.stderr.write('\n')
 			sys.stderr.flush()
 		elif cl_args['read']:
+			data_source = str(cl_args['read'])
 			for one_pcap in cl_args['read']:
 				if os.path.exists(one_pcap):
 					if os.access(one_pcap, os.R_OK):
@@ -594,4 +599,4 @@ if __name__ == '__main__':
 	except KeyboardInterrupt:
 		pass
 
-	print_stats(cl_args['mincount'], cl_args['minsize'], cl_args['format'])
+	print_stats(cl_args['mincount'], cl_args['minsize'], cl_args['format'], data_source)
