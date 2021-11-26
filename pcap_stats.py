@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Print statistics of a pcap file or packets arriving on an interface."""
 
+#Dedicated to the memory of Alan Paller, whose vision of a secure
+#Internet gave thousands of us a chance to learn and grow.
 
 
-__version__ = '0.0.25'
+__version__ = '0.0.29'
 
 __author__ = 'William Stearns'
 __copyright__ = 'Copyright 2021, William Stearns'
@@ -11,7 +13,7 @@ __credits__ = ['William Stearns']
 __email__ = 'william.l.stearns@gmail.com'
 __license__ = 'GPL 3.0'
 __maintainer__ = 'William Stearns'
-__status__ = 'Prototype'				#Prototype, Development or Production
+__status__ = 'Production'				#Prototype, Development or Production
 
 
 
@@ -21,9 +23,17 @@ import time
 
 try:
 	#from scapy.all import *
-	from scapy.all import ARP, Ether, ICMP, IP, IPv6, LLC, Scapy_Exception, STP, TCP, UDP, sniff				# pylint: disable=no-name-in-module
+	from scapy.all import ARP, DNS, Ether, ICMP, IP, IPv6, LLC, Scapy_Exception, STP, TCP, UDP, sniff				# pylint: disable=no-name-in-module
+	from scapy.config import conf
 except ImportError:
 	sys.stderr.write('Unable to load the scapy library.  Perhaps run   sudo apt install python3-pip || sudo yum install python3-pip ; sudo pip3 install scapy   ?\n')
+	sys.stderr.flush()
+	sys.exit(1)
+
+try:
+	from passer_lib import DNS_extract, explode_ip, generate_meta_from_packet
+except ImportError:
+	sys.stderr.write('Unable to load the passer_lib library.\n')
 	sys.stderr.flush()
 	sys.exit(1)
 
@@ -96,7 +106,11 @@ def processpacket(p):
 		processpacket.p_stats = {'count': [0, 0]}
 
 	if "field_filter" not in processpacket.__dict__:
-		processpacket.field_filter = {'count': '', 'ARP': 'arp', 'DNS': 'port 53 or udp port 5353 or udp port 5355', 'ESP': 'ip proto esp', 'IP': 'ip', 'ICMP': 'icmp', 'IPv6': 'ip6', 'TCP': 'tcp', 'UDP': 'udp', '802.1Q': 'vlan',
+		processpacket.field_filter = {'count': '', 'ARP': 'arp',
+		'DHCP6 IA Address Option (IA TA or IA NA suboption)': 'udp port 546 or udp port 547', 'DHCP6 Preference Option': 'udp port 546 or udp port 547', 'DHCP6 Server Identifier Option': 'udp port 546 or udp port 547', 'DHCP6 Status Code Option': 'udp port 546 or udp port 547', 'DHCPv6 Confirm Message': 'udp port 546 or udp port 547', 'DHCPv6 Reply Message': 'udp port 546 or udp port 547',
+		'DNS': 'port 53 or udp port 5353 or udp port 5355', 'ESP': 'ip proto esp',
+		'ICMPv6 Neighbor Discovery - Neighbor Advertisement': 'icmp6[0] == 136', 'ICMPv6 Neighbor Discovery - Neighbor Solicitation': 'icmp6[0] == 135', 'ICMPv6 Neighbor Discovery - Router Solicitation': 'icmp6[0] == 133', 'IP': 'ip', 'ICMP': 'icmp', 'IPv6': 'ip6', 'ISAKMP': 'port 500 or udp port 4500',
+		'NTPHeader': 'udp port 123', 'RIP_entry': 'udp port 520', 'RIP_header': 'udp port 520', 'SNMP': 'port 161 or port 162', 'TCP': 'tcp', 'TFTP_Read_Request': 'port 69', 'TFTP_opcode': 'port 69', 'UDP': 'udp', '802.1Q': 'vlan',
 		'TCP_FLAGS_': 'tcp[12:2] & 0x01ff = 0x0000', 'TCP_FLAGS_F': 'tcp[12:2] & 0x01ff = 0x0001', 'TCP_FLAGS_S': 'tcp[12:2] & 0x01ff = 0x0002', 'TCP_FLAGS_R': 'tcp[12:2] & 0x01ff = 0x0004', 'TCP_FLAGS_SR': 'tcp[12:2] & 0x01ff = 0x0006', 'TCP_FLAGS_RP': 'tcp[12:2] & 0x01ff = 0x000C',
 		'TCP_FLAGS_A': 'tcp[12:2] & 0x01ff = 0x0010', 'TCP_FLAGS_FA': 'tcp[12:2] & 0x01ff = 0x0011', 'TCP_FLAGS_SA': 'tcp[12:2] & 0x01ff = 0x0012', 'TCP_FLAGS_RA': 'tcp[12:2] & 0x01ff = 0x0014', 'TCP_FLAGS_FRA': 'tcp[12:2] & 0x01ff = 0x0015', 'TCP_FLAGS_PA': 'tcp[12:2] & 0x01ff = 0x0018', 'TCP_FLAGS_FPA': 'tcp[12:2] & 0x01ff = 0x0019', 'TCP_FLAGS_RPA': 'tcp[12:2] & 0x01ff = 0x001C',
 		'TCP_FLAGS_U': 'tcp[12:2] & 0x01ff = 0x0020', 'TCP_FLAGS_SU': 'tcp[12:2] & 0x01ff = 0x0022', 'TCP_FLAGS_FPU': 'tcp[12:2] & 0x01ff = 0x0029', 'TCP_FLAGS_FSPU': 'tcp[12:2] & 0x01ff = 0x002b',
@@ -136,9 +150,14 @@ def processpacket(p):
 	if "ipv4s_for_mac" not in processpacket.__dict__:
 		processpacket.ipv4s_for_mac = {}
 
+	if 'hosts_for_ip' not in processpacket.__dict__:		#Dictionary; keys are IP addresses, values are sets of hostnames
+		processpacket.hosts_for_ip = {}
 
 	p_layers = packet_layers(p)
 
+	prefs = {'nxdomain': False}
+	dests = {'unhandled': None}
+	meta = generate_meta_from_packet(p, prefs, dests)
 
 	if p.haslayer(IP):
 		i_layer = p.getlayer(IP)
@@ -171,13 +190,13 @@ def processpacket(p):
 			processpacket.p_stats[label] = [0, 0]
 		processpacket.p_stats[label][0] += 1
 		processpacket.p_stats[label][1] += p_len
-		processpacket.field_filter[label] = 'host ' + sIP
+		processpacket.field_filter[label] = 'ip6 host ' + sIP
 		label = 'ip6_' + dIP
 		if label not in processpacket.p_stats:
 			processpacket.p_stats[label] = [0, 0]
 		processpacket.p_stats[label][0] += 1
 		processpacket.p_stats[label][1] += p_len
-		processpacket.field_filter[label] = 'host ' + dIP
+		processpacket.field_filter[label] = 'ip6 host ' + dIP
 	elif p.haslayer(ARP):
 		i_layer = None
 		p_len = packet_len(p, ARP)
@@ -227,6 +246,22 @@ def processpacket(p):
 			processpacket.p_stats[a_layer][1] += p_len
 
 
+	if p.haslayer(DNS) and (isinstance(p[DNS], DNS)):
+		dns_tuples = DNS_extract(p, meta, prefs, dests)
+		#print(str(dns_tuples))
+
+		for one_tuple in dns_tuples:
+			if one_tuple[0] == 'DN':
+				if one_tuple[2] in ('A', 'AAAA', 'PTR', 'CNAME'):
+					if one_tuple[1] not in processpacket.hosts_for_ip:
+						processpacket.hosts_for_ip[one_tuple[1]] = set()
+					processpacket.hosts_for_ip[one_tuple[1]].add(one_tuple[3])
+				#else:
+				#	print(str(one_tuple))
+			elif one_tuple[0] in ('US', 'UC'):
+				pass
+			else:
+				print(str(one_tuple))
 
 	if sIP != '::':
 		if ttl == 255:										#The system is sending a broadcast - it must be local
@@ -443,7 +478,7 @@ def print_stats(mincount_to_show, minsize_to_show, out_format, source_string):
 			print('<body>')
 			print('<table border=1>')
 			print('<tr><th colspan=6 bgcolor="#ffffff">Pcap Statistics for ' + source_string + '</th></tr>')
-			print("<tr><th colspan=5>Begin_time: " + time.asctime(time.gmtime(processpacket.minstamp)) + ", End_time: " + time.asctime(time.gmtime(processpacket.maxstamp)) + ", Elapsed_time: " + str(processpacket.maxstamp - processpacket.minstamp) + " seconds</th></tr>")
+			print("<tr><th colspan=5>Begin_time: " + time.asctime(time.gmtime(int(processpacket.minstamp))) + ", End_time: " + time.asctime(time.gmtime(int(processpacket.maxstamp))) + ", Elapsed_time: " + str(processpacket.maxstamp - processpacket.minstamp) + " seconds</th></tr>")
 			print('<tr><th>Count</th><th>Bytes</th><th>Description</th><th>BPF expression</th><th>Hint</th></tr>')
 
 			#print(processpacket.p_stats)
@@ -451,8 +486,8 @@ def print_stats(mincount_to_show, minsize_to_show, out_format, source_string):
 
 
 		elif out_format == 'ascii':
-			print("Begin_time: " + time.asctime(time.gmtime(processpacket.minstamp)))
-			print("End_time: " + time.asctime(time.gmtime(processpacket.maxstamp)))
+			print("Begin_time: " + time.asctime(time.gmtime(int(processpacket.minstamp))))
+			print("End_time: " + time.asctime(time.gmtime(int(processpacket.maxstamp))))
 			print("Elapsed_time: " + str(processpacket.maxstamp - processpacket.minstamp))
 
 
@@ -461,6 +496,11 @@ def print_stats(mincount_to_show, minsize_to_show, out_format, source_string):
 			if processpacket.p_stats[one_key][0] >= mincount_to_show and processpacket.p_stats[one_key][1] >= minsize_to_show:
 				desc = one_key.replace(' ', '_')
 				orig_ip = desc.replace('ip4_', '').replace('ip6_', '')
+				full_ip = explode_ip(orig_ip, {}, {})
+				if full_ip in processpacket.hosts_for_ip:
+					orig_ip_names = str(processpacket.hosts_for_ip[full_ip])
+				else:
+					orig_ip_names = ''
 				is_local = ''
 				if orig_ip in processpacket.local_ips:
 					is_local = 'local'
@@ -469,10 +509,13 @@ def print_stats(mincount_to_show, minsize_to_show, out_format, source_string):
 						if orig_ip in processpacket.ipv4s_for_mac[one_mac] and len(processpacket.ipv4s_for_mac[one_mac]) > 1:
 							is_local = 'local ipv4router ' + str(processpacket.ipv4s_for_mac[one_mac])
 
-				if out_format == 'html':
-					print("<tr><td align=right>{0:}</td><td align=right>{1}</td><td>{2}</td><td>{3}</td><td>{4}</td></tr>".format(processpacket.p_stats[one_key][0], processpacket.p_stats[one_key][1], desc, processpacket.field_filter.get(one_key, ''), hints_for(desc, is_local)))
-				elif out_format == 'ascii':
-					print("{0:>10d} {1:>13d} {2:60s} {3:48s} {4:30s}".format(processpacket.p_stats[one_key][0], processpacket.p_stats[one_key][1], desc, processpacket.field_filter.get(one_key, ''), hints_for(desc, is_local)))
+				try:
+					if out_format == 'html':
+						print("<tr><td align=right>{0:}</td><td align=right>{1}</td><td>{2}</td><td>{3}</td><td>{4}</td></tr>".format(processpacket.p_stats[one_key][0], processpacket.p_stats[one_key][1], desc, processpacket.field_filter.get(one_key, ''), ' '.join([hints_for(desc, is_local), orig_ip_names])))
+					elif out_format == 'ascii':
+						print("{0:>10d} {1:>13d} {2:60s} {3:48s} {4:30s}".format(processpacket.p_stats[one_key][0], processpacket.p_stats[one_key][1], desc, processpacket.field_filter.get(one_key, ''), ' '.join([hints_for(desc, is_local), orig_ip_names])))
+				except BrokenPipeError:
+					sys.exit(0)
 		if out_format == 'html':
 			print('</table>')
 
@@ -497,20 +540,22 @@ hints = {'TCP_FLAGS_': 'Invalid/no_tcp_flags', 'TCP_FLAGS_SR': 'Invalid/syn_and_
          'icmp_11.0': 'time_exceeded/TTL', 'icmp_11.1': 'time_exceeded/frag_reassembly_time_exceeded',
          'icmp_13.0': 'timestamp',
          'icmp_14.0': 'timestamp_reply',
-         'ip4_0.0.0.0': 'address_unspecified', 'ip4_1.1.1.1': 'public_dns/cloudflare', 'ip4_127.0.0.1': 'localhost', 'ip4_8.8.4.4': 'public_dns/google', 'ip4_8.8.8.8': 'public_dns/google', 'ip4_75.75.75.75': 'public_dns/cdns01.comcast.net', 'ip4_75.75.76.76': 'public_dns/cdns02.comcast.net', 'ip4_224.0.0.1': 'all_systems_on_this_subnet', 'ip4_224.0.0.2': 'all_routers_on_this_subnet', 'ip4_224.0.0.13': 'all_pim_routers', 'ip4_224.0.0.22': 'multicast/IGMP', 'ip4_224.0.0.251': 'multicast/mDNS', 'ip4_224.0.0.252': 'multicast/LLMNR', 'ip4_224.0.1.40': 'multicast/cisco_rp_discovery', 'ip4_224.0.1.60': 'multicast/hp_device_discovery', 'ip4_239.255.255.250': 'multicast/uPNP_or_SSDP', 'ip4_255.255.255.255': 'broadcast',
-         'ip6_2001:558:feed::1': 'public_dns/cdns01.comcast.net', 'ip6_2001:558:feed::2': 'public_dns/cdns02.comcast.net',
+         'ip4_0.0.0.0': 'address_unspecified', 'ip4_1.1.1.1': 'public_dns/cloudflare', 'ip4_127.0.0.1': 'localhost', 'ip4_8.8.4.4': 'public_dns/google', 'ip4_8.8.8.8': 'public_dns/google', 'ip4_75.75.75.75': 'public_dns/cdns01.comcast.net', 'ip4_75.75.76.76': 'public_dns/cdns02.comcast.net', 'ip4_75.75.77.22': 'public_dns/doh.xfinity.com', 'ip4_75.75.77.98': 'public_dns/doh.xfinity.com', 'ip4_224.0.0.1': 'all_systems_on_this_subnet', 'ip4_224.0.0.2': 'all_routers_on_this_subnet', 'ip4_224.0.0.13': 'all_pim_routers', 'ip4_224.0.0.22': 'multicast/IGMP', 'ip4_224.0.0.251': 'multicast/mDNS', 'ip4_224.0.0.252': 'multicast/LLMNR', 'ip4_224.0.1.40': 'multicast/cisco_rp_discovery', 'ip4_224.0.1.60': 'multicast/hp_device_discovery', 'ip4_239.255.255.250': 'multicast/uPNP_or_SSDP', 'ip4_255.255.255.255': 'broadcast',
+         'ip6_2001:558:feed::1': 'public_dns/cdns01.comcast.net', 'ip6_2001:558:feed::2': 'public_dns/cdns02.comcast.net', 'ip6_2001:558:feed:443::98': 'public_dns/doh.xfinity.com',
          'ip6_::': 'address_unspecified', 'ip6_::1': 'localhost', 'ip6_ff02::1': 'multicast/all_nodes', 'ip6_ff02::2': 'multicast/all_routers', 'ip6_ff02::c': 'multicast/ssdp', 'ip6_ff02::16': 'multicast/MLDv2_capable_routers', 'ip6_ff02::fb': 'multicast/mDNSv6', 'ip6_ff02::1:2': 'multicast/DHCP_Relay_Agents_and_Servers', 'ip6_ff02::1:3': 'multicast/LLMNR',
-         'proto_2': 'igmp', 'proto_47': 'gre', 'proto_50': 'esp', 'proto_51': 'ah', 'proto_103': 'pim',
+         'proto_0': 'ip', 'proto_2': 'igmp', 'proto_47': 'gre', 'proto_50': 'esp', 'proto_51': 'ah', 'proto_58': 'ipv6_icmp', 'proto_103': 'pim',
          'udp_7': 'echo', 'udp_17': 'qotd', 'udp_19': 'chargen', 'udp_53': 'dns', 'udp_67': 'bootp/dhcp', 'udp_69': 'tftp', 'udp_88': 'kerberos',
          'udp_111': 'rpc', 'udp_123': 'ntp', 'udp_137': 'netbios/ns', 'udp_138': 'netbios/datagram', 'udp_161': 'snmp',
          'udp_389': 'ldap',
          'udp_443': 'https/quic',
          'udp_500': 'isakmp/ike', 'udp_514': 'syslog', 'udp_520': 'rip', 'udp_546': 'dhcpv6_client', 'udp_547': 'dhcpv6',
          'udp_1194': 'openvpn',
-         'udp_1434': 'mssql_monitor', 'udp_1900': 'ssdp/upnp',
-         'udp_3389': 'remote_desktop_protocol', 'udp_3478': 'webrtc', 'udp_3702': 'web_services_discovery',
+         'udp_1434': 'mssql_monitor', 'udp_1853': 'videoconf/gotowebinar', 'udp_1900': 'ssdp/upnp',
+         'udp_3389': 'remote_desktop_protocol', 'udp_3478': 'webrtc', 'udp_3479': 'webrtc', 'udp_3480': 'webrtc', 'udp_3481': 'webrtc', 'udp_3702': 'web_services_discovery',
          'udp_4500': 'ipsec_nat_traversal', 'udp_4501': 'globalprotect_vpn', 'udp_4789': 'vxlan',
          'udp_5002': 'drobo_discovery', 'udp_5060': 'sip', 'udp_5353': 'mDNS', 'udp_5355': 'LLMNR', 'udp_5938': 'teamviewer',
+         'udp_8200': 'videoconf/gotowebinar', 'udp_8801': 'videoconf/zoom', 'udp_8802': 'videoconf/zoom',
+         'udp_15509': 'videoconf/zoom',
          'udp_17500': 'dropbox_lan_sync',
          'udp_19305': 'google_meet',
          'tcp_7': 'echo', 'tcp_11': 'systat', 'tcp_19': 'chargen', 'tcp_20': 'ftp-data', 'tcp_21': 'ftp', 'tcp_22': 'ssh', 'tcp_23': 'telnet', 'tcp_25': 'smtp', 'tcp_43': 'whois', 'tcp_53': 'dns', 'tcp_79': 'finger', 'tcp_80': 'http', 'tcp_88': 'kerberos',
@@ -525,7 +570,7 @@ hints = {'TCP_FLAGS_': 'Invalid/no_tcp_flags', 'TCP_FLAGS_SR': 'Invalid/syn_and_
          'tcp_1723': 'pptp',
          'tcp_1935': 'rtmp', 'tcp_1984': 'bigbrother',
          'tcp_3128': 'squid_proxy', 'tcp_3306': 'mysql', 'tcp_3389': 'remote_desktop_protocol', 'tcp_3478': 'webrtc',
-         'tcp_5223': 'apple_push_notification', 'tcp_5060': 'sip', 'tcp_5900': 'remote_framebuffer', 'tcp_5938': 'teamviewer',
+         'tcp_5223': 'apple_push_notification', 'tcp_5060': 'sip', 'tcp_5601': 'kibana', 'tcp_5900': 'vnc/remote_framebuffer', 'tcp_5938': 'teamviewer',
          'tcp_6379': 'redis',
          'tcp_8008': 'apple_ical', 'tcp_8333': 'bitcoin',
          'tcp_9200': 'elasticsearch'}
@@ -565,6 +610,12 @@ if __name__ == '__main__':
 	cl_args = vars(parsed)
 
 	data_source = 'unknown'
+
+	#We have to use libpcap instead of scapy's built-in code because the latter won't attach complex bpfs
+	try:
+		conf.use_pcap = True
+	except:
+		config.use_pcap = True
 
 	try:
 		if cl_args['interface']:
