@@ -5,7 +5,7 @@
 #Internet gave thousands of us a chance to learn and grow.
 
 
-__version__ = '0.0.29'
+__version__ = '0.0.32'
 
 __author__ = 'William Stearns'
 __copyright__ = 'Copyright 2021, William Stearns'
@@ -20,6 +20,9 @@ __status__ = 'Production'				#Prototype, Development or Production
 import os
 import sys
 import time
+import tempfile
+import gzip												#Lets us read from gzip-compressed pcap files
+import bz2												#Lets us read from bzip2-compressed pcap files
 
 try:
 	#from scapy.all import *
@@ -44,6 +47,34 @@ def debug_out(output_string):
 	if cl_args['devel']:
 		sys.stderr.write(output_string + '\n')
 		sys.stderr.flush()
+
+
+def open_bzip2_file_to_tmp_file(bzip2_filename):
+	"""Open up a bzip2 file to a temporary file and return that filename."""
+
+	tmp_fd, tmp_path = tempfile.mkstemp()
+	try:
+		with os.fdopen(tmp_fd, 'wb') as tmp_h, bz2.BZ2File(bzip2_filename, 'rb') as compressed_file:
+			for data in iter(lambda: compressed_file.read(100 * 1024), b''):
+				tmp_h.write(data)
+		return tmp_path
+	except:
+		sys.stderr.write("While expanding bzip2 file, unable to write to " + str(tmp_path) + ', exiting.\n')
+		raise
+
+
+def open_gzip_file_to_tmp_file(gzip_filename):
+	"""Open up a gzip file to a temporary file and return that filename."""
+
+	tmp_fd, tmp_path = tempfile.mkstemp()
+	try:
+		with os.fdopen(tmp_fd, 'wb') as tmp_h, gzip.GzipFile(gzip_filename, 'rb') as compressed_file:
+			for data in iter(lambda: compressed_file.read(100 * 1024), b''):
+				tmp_h.write(data)
+		return tmp_path
+	except:
+		sys.stderr.write("While expanding gzip file, unable to write to " + str(tmp_path) + ', exiting.\n')
+		raise
 
 
 def packet_layers(pkt):
@@ -99,11 +130,20 @@ def packet_len(packet, whichlayer):
 	return pack_len
 
 
+def inc_stats(one_label, length):
+	"""Increment the packet count and total size for this layer."""
+
+	if "p_stats" not in inc_stats.__dict__:
+		inc_stats.p_stats = {'count': [0, 0]}
+
+	if one_label not in inc_stats.p_stats:
+		inc_stats.p_stats[one_label] = [0, 0]
+	inc_stats.p_stats[one_label][0] += 1
+	inc_stats.p_stats[one_label][1] += length
+
+
 def processpacket(p):
 	"""Extract statistics from a single packet."""
-
-	if "p_stats" not in processpacket.__dict__:
-		processpacket.p_stats = {'count': [0, 0]}
 
 	if "field_filter" not in processpacket.__dict__:
 		processpacket.field_filter = {'count': '', 'ARP': 'arp',
@@ -155,7 +195,7 @@ def processpacket(p):
 
 	p_layers = packet_layers(p)
 
-	prefs = {'nxdomain': False}
+	prefs = {'nxdomain': False, 'devel': cl_args['devel']}
 	dests = {'unhandled': None}
 	meta = generate_meta_from_packet(p, prefs, dests)
 
@@ -167,16 +207,10 @@ def processpacket(p):
 		sIP = i_layer.src
 		dIP = i_layer.dst
 		label = 'ip4_' + sIP
-		if label not in processpacket.p_stats:
-			processpacket.p_stats[label] = [0, 0]
-		processpacket.p_stats[label][0] += 1
-		processpacket.p_stats[label][1] += p_len
+		inc_stats(label, p_len)
 		processpacket.field_filter[label] = 'host ' + sIP
 		label = 'ip4_' + dIP
-		if label not in processpacket.p_stats:
-			processpacket.p_stats[label] = [0, 0]
-		processpacket.p_stats[label][0] += 1
-		processpacket.p_stats[label][1] += p_len
+		inc_stats(label, p_len)
 		processpacket.field_filter[label] = 'host ' + dIP
 	elif p.haslayer(IPv6):
 		i_layer = p.getlayer(IPv6)
@@ -186,16 +220,10 @@ def processpacket(p):
 		sIP = i_layer.src
 		dIP = i_layer.dst
 		label = 'ip6_' + sIP
-		if label not in processpacket.p_stats:
-			processpacket.p_stats[label] = [0, 0]
-		processpacket.p_stats[label][0] += 1
-		processpacket.p_stats[label][1] += p_len
+		inc_stats(label, p_len)
 		processpacket.field_filter[label] = 'ip6 host ' + sIP
 		label = 'ip6_' + dIP
-		if label not in processpacket.p_stats:
-			processpacket.p_stats[label] = [0, 0]
-		processpacket.p_stats[label][0] += 1
-		processpacket.p_stats[label][1] += p_len
+		inc_stats(label, p_len)
 		processpacket.field_filter[label] = 'ip6 host ' + dIP
 	elif p.haslayer(ARP):
 		i_layer = None
@@ -204,6 +232,13 @@ def processpacket(p):
 		ttl = -1
 		sIP = p.getlayer(ARP).psrc
 		dIP = p.getlayer(ARP).pdst
+	elif (p.haslayer(Ether) and p[Ether].type == 0x888E):				#EAPOL packet; PAE=0x888E
+		i_layer = None
+		p_len = 0		#FIXME
+		proto = None
+		ttl = -1
+		sIP = None
+		dIP = None
 	elif p.haslayer(LLC) or p.haslayer(STP):
 		i_layer = None
 		p_len = 0		#FIXME
@@ -219,6 +254,8 @@ def processpacket(p):
 		sIP = None
 		dIP = None
 	else:
+		print("Ethernet type")
+		print(p[Ether].type)
 		p.show()
 		sys.exit(99)
 		i_layer = None
@@ -228,8 +265,8 @@ def processpacket(p):
 		sIP = None
 		dIP = None
 
-	processpacket.p_stats['count'][0] += 1
-	processpacket.p_stats['count'][1] += p_len
+	inc_stats.p_stats['count'][0] += 1
+	inc_stats.p_stats['count'][1] += p_len
 	#sys.stderr.write('.')
 
 	if sIP and sIP != '0.0.0.0' and ':' not in sIP and not sIP.startswith('169.254.') and p.haslayer(Ether):	#We remember all the IPv4 addresses associated with a particular mac to decide later whether a mac address is a router.
@@ -240,10 +277,7 @@ def processpacket(p):
 
 	for a_layer in p_layers:
 		if a_layer not in ignore_layers:
-			if a_layer not in processpacket.p_stats:
-				processpacket.p_stats[a_layer] = [0, 0]
-			processpacket.p_stats[a_layer][0] += 1
-			processpacket.p_stats[a_layer][1] += p_len
+			inc_stats(a_layer, p_len)
 
 
 	if p.haslayer(DNS) and (isinstance(p[DNS], DNS)):
@@ -258,7 +292,7 @@ def processpacket(p):
 					processpacket.hosts_for_ip[one_tuple[1]].add(one_tuple[3])
 				#else:
 				#	print(str(one_tuple))
-			elif one_tuple[0] in ('US', 'UC'):
+			elif one_tuple[0] in ('US', 'UC', 'TS', 'IP'):
 				pass
 			else:
 				print(str(one_tuple))
@@ -280,15 +314,12 @@ def processpacket(p):
 			processpacket.local_ips.add(dIP)
 		else:
 			p.show()
-			sys.exit(99)
+			sys.exit(98)
 
 	#Good for debugging
 	#if sIP and ttl != -1:
 	#	label = 'ipttl_' + sIP + '_' + str(ttl)
-	#	if label not in processpacket.p_stats:
-	#		processpacket.p_stats[label] = [0, 0]
-	#	processpacket.p_stats[label][0] += 1
-	#	processpacket.p_stats[label][1] += p_len
+	#	inc_stats(label, p_len)
 	#	if ':' in sIP:
 	#		processpacket.field_filter[label] = 'src host ' + sIP + ' and ip6[7] = ' + str(ttl)
 	#	else:
@@ -311,7 +342,7 @@ def processpacket(p):
 	if p.haslayer(TCP):
 		t_layer = p.getlayer(TCP)
 		#p.show()
-		#sys.exit(99)
+		#sys.exit(97)
 
 
 		if t_layer.flags == 'S' and t_layer.dport not in processpacket.tcp_server_ports:	#Following blocks try to identify which end is the "server" port.
@@ -323,117 +354,86 @@ def processpacket(p):
 
 		if t_layer.sport in processpacket.tcp_server_ports:
 			label = 'tcp_' + str(t_layer.sport)
-			if label not in processpacket.p_stats:
-				processpacket.p_stats[label] = [0, 0]
-			processpacket.p_stats[label][0] += 1
-			processpacket.p_stats[label][1] += p_len
+			inc_stats(label, p_len)
 			processpacket.field_filter[label] = 'tcp port ' + str(t_layer.sport)
 		elif t_layer.dport in processpacket.tcp_server_ports:
 			label = 'tcp_' + str(t_layer.dport)
-			if label not in processpacket.p_stats:
-				processpacket.p_stats[label] = [0, 0]
-			processpacket.p_stats[label][0] += 1
-			processpacket.p_stats[label][1] += p_len
+			inc_stats(label, p_len)
 			processpacket.field_filter[label] = 'tcp port ' + str(t_layer.dport)
 		elif t_layer.sport in tcp_ignore_ports and t_layer.dport in tcp_ignore_ports:
 			pass
 		else:
 			debug_out("No tcp server port: " + str(t_layer.sport) + " " + str(t_layer.dport))
 			#p.show()
-			#sys.exit(99)
+			#sys.exit(96)
 
 		label = 'TCP_FLAGS_' + str(t_layer.flags)
-		if label not in processpacket.p_stats:
-			processpacket.p_stats[label] = [0, 0]
-		processpacket.p_stats[label][0] += 1
-		processpacket.p_stats[label][1] += p_len
+		inc_stats(label, p_len)
 
 	elif p.haslayer(UDP):
 		u_layer = p.getlayer(UDP)
 		if u_layer.sport in processpacket.udp_server_ports:					#Following blocks try to identify which end is the "server" port.
 			label = 'udp_' + str(u_layer.sport)
-			if label not in processpacket.p_stats:
-				processpacket.p_stats[label] = [0, 0]
-			processpacket.p_stats[label][0] += 1
-			processpacket.p_stats[label][1] += p_len
+			inc_stats(label, p_len)
 			processpacket.field_filter[label] = 'udp port ' + str(u_layer.sport)
 		elif u_layer.dport in processpacket.udp_server_ports:
 			label = 'udp_' + str(u_layer.dport)
-			if label not in processpacket.p_stats:
-				processpacket.p_stats[label] = [0, 0]
-			processpacket.p_stats[label][0] += 1
-			processpacket.p_stats[label][1] += p_len
+			inc_stats(label, p_len)
 			processpacket.field_filter[label] = 'udp port ' + str(u_layer.dport)
 		elif u_layer.sport >= 33434 and u_layer.sport < 33524:					#Special case traceroute if we didn't find it in the fixed ports above
 			label = 'udp_' + str(u_layer.sport)
-			if label not in processpacket.p_stats:
-				processpacket.p_stats[label] = [0, 0]
-			processpacket.p_stats[label][0] += 1
-			processpacket.p_stats[label][1] += p_len
+			inc_stats(label, p_len)
 			processpacket.field_filter[label] = 'udp port ' + str(u_layer.sport)
 		elif u_layer.dport >= 33434 and u_layer.dport < 33524:
 			label = 'udp_' + str(u_layer.dport)
-			if label not in processpacket.p_stats:
-				processpacket.p_stats[label] = [0, 0]
-			processpacket.p_stats[label][0] += 1
-			processpacket.p_stats[label][1] += p_len
+			inc_stats(label, p_len)
 			processpacket.field_filter[label] = 'udp port ' + str(u_layer.dport)
 		elif u_layer.sport in udp_ignore_ports and u_layer.dport in udp_ignore_ports:
 			pass
 		else:
 			label = 'udp_' + str(u_layer.sport)
-			if label not in processpacket.p_stats:
-				processpacket.p_stats[label] = [0, 0]
-			processpacket.p_stats[label][0] += 1
-			processpacket.p_stats[label][1] += p_len
+			inc_stats(label, p_len)
 			processpacket.field_filter[label] = 'udp port ' + str(u_layer.sport)
 			label = 'udp_' + str(u_layer.dport)
-			if label not in processpacket.p_stats:
-				processpacket.p_stats[label] = [0, 0]
-			processpacket.p_stats[label][0] += 1
-			processpacket.p_stats[label][1] += p_len
+			inc_stats(label, p_len)
 			processpacket.field_filter[label] = 'udp port ' + str(u_layer.dport)
 
 			#debug_out("No udp server port")
 			#p.show()
-			#sys.exit(99)
+			#sys.exit(95)
 	elif p.haslayer(ICMP):
 		i_layer = p.getlayer(ICMP)
 		label = 'icmp_' + str(i_layer.type) + '.' + str(i_layer.code)
-		if label not in processpacket.p_stats:
-			processpacket.p_stats[label] = [0, 0]
-		processpacket.p_stats[label][0] += 1
-		processpacket.p_stats[label][1] += p_len
+		inc_stats(label, p_len)
 		processpacket.field_filter[label] = 'icmptype = ' + str(i_layer.type) + ' and icmpcode = ' + str(i_layer.code)
 		#p.show()
-		#sys.exit(99)
+		#sys.exit(94)
 	#Come back for this - it takes a lot of individual headers
 	#elif p.haslayer(ICMPv6):					#use icmp6type and icmp6code
 	#	i_layer = p.getlayer(ICMPv6)
 	#	p.show()
-	#	sys.exit(99)
+	#	sys.exit(93)
 	#	label = 'icmp_' + str(i_layer.type) + '.' + str(i_layer.code)
-	#	if label not in processpacket.p_stats:
-	#		processpacket.p_stats[label] = [0, 0]
-	#	processpacket.p_stats[label][0] += 1
+	#	if label not in inc_stats.p_stats:
+	#		inc_stats.p_stats[label] = [0, 0]
+	#	inc_stats.p_stats[label][0] += 1
 	elif p.haslayer(ARP) or p.haslayer(LLC):
 		pass
 	elif proto:
 		label = 'proto_' + str(proto)
-		if label not in processpacket.p_stats:
-			processpacket.p_stats[label] = [0, 0]
-		processpacket.p_stats[label][0] += 1
-		processpacket.p_stats[label][1] += p_len
+		inc_stats(label, p_len)
 		processpacket.field_filter[label] = 'ip proto ' + str(proto)
 
 	elif p.haslayer(IPv6):						#use "ip6 proto"
 		pass							#FIXME
 	elif p_layers == ['Ethernet', 'Raw']:
 		pass
+	elif (p.haslayer(Ether) and p[Ether].type == 0x888E):				#EAPOL packet; PAE=0x888E
+		pass
 	else:
 		debug_out("Non-udp-tcp")
 		p.show()
-		sys.exit(99)
+		sys.exit(92)
 
 
 def hints_for(proto_desc, local_info):
@@ -469,7 +469,7 @@ def hints_for(proto_desc, local_info):
 def print_stats(mincount_to_show, minsize_to_show, out_format, source_string):
 	"""Show statistics"""
 
-	if "p_stats" in processpacket.__dict__:
+	if "p_stats" in inc_stats.__dict__:
 		if out_format == 'html':
 			print('<html>')
 			print('<head>')
@@ -481,19 +481,16 @@ def print_stats(mincount_to_show, minsize_to_show, out_format, source_string):
 			print("<tr><th colspan=5>Begin_time: " + time.asctime(time.gmtime(int(processpacket.minstamp))) + ", End_time: " + time.asctime(time.gmtime(int(processpacket.maxstamp))) + ", Elapsed_time: " + str(processpacket.maxstamp - processpacket.minstamp) + " seconds</th></tr>")
 			print('<tr><th>Count</th><th>Bytes</th><th>Description</th><th>BPF expression</th><th>Hint</th></tr>')
 
-			#print(processpacket.p_stats)
+			#print(inc_stats.p_stats)
 			#print("Local_IPs: " + str(sorted(processpacket.local_ips)))
-
 
 		elif out_format == 'ascii':
 			print("Begin_time: " + time.asctime(time.gmtime(int(processpacket.minstamp))))
 			print("End_time: " + time.asctime(time.gmtime(int(processpacket.maxstamp))))
 			print("Elapsed_time: " + str(processpacket.maxstamp - processpacket.minstamp))
 
-
-
-		for one_key in sorted(processpacket.p_stats.keys()):
-			if processpacket.p_stats[one_key][0] >= mincount_to_show and processpacket.p_stats[one_key][1] >= minsize_to_show:
+		for one_key in sorted(inc_stats.p_stats.keys()):
+			if inc_stats.p_stats[one_key][0] >= mincount_to_show and inc_stats.p_stats[one_key][1] >= minsize_to_show:
 				desc = one_key.replace(' ', '_')
 				orig_ip = desc.replace('ip4_', '').replace('ip6_', '')
 				full_ip = explode_ip(orig_ip, {}, {})
@@ -511,24 +508,74 @@ def print_stats(mincount_to_show, minsize_to_show, out_format, source_string):
 
 				try:
 					if out_format == 'html':
-						print("<tr><td align=right>{0:}</td><td align=right>{1}</td><td>{2}</td><td>{3}</td><td>{4}</td></tr>".format(processpacket.p_stats[one_key][0], processpacket.p_stats[one_key][1], desc, processpacket.field_filter.get(one_key, ''), ' '.join([hints_for(desc, is_local), orig_ip_names])))
+						print("<tr><td align=right>{0:}</td><td align=right>{1}</td><td>{2}</td><td>{3}</td><td>{4}</td></tr>".format(inc_stats.p_stats[one_key][0], inc_stats.p_stats[one_key][1], desc, processpacket.field_filter.get(one_key, ''), ' '.join([hints_for(desc, is_local), orig_ip_names])))
 					elif out_format == 'ascii':
-						print("{0:>10d} {1:>13d} {2:60s} {3:48s} {4:30s}".format(processpacket.p_stats[one_key][0], processpacket.p_stats[one_key][1], desc, processpacket.field_filter.get(one_key, ''), ' '.join([hints_for(desc, is_local), orig_ip_names])))
+						print("{0:>10d} {1:>13d} {2:60s} {3:48s} {4:30s}".format(inc_stats.p_stats[one_key][0], inc_stats.p_stats[one_key][1], desc, processpacket.field_filter.get(one_key, ''), ' '.join([hints_for(desc, is_local), orig_ip_names])))
 				except BrokenPipeError:
 					sys.exit(0)
 		if out_format == 'html':
 			print('</table>')
-
-
-		if out_format == 'html':
 			print('</body></html>')
 	else:
 		sys.stderr.write('It does not appear any packets were read.  Exiting.\n')
 		sys.stderr.flush()
 
 
+def process_packet_source(if_name, pcap_source, user_args):
+	"""Process the packets in a single source file, interface, or stdin."""
 
+	source_file = None
+	close_temp = False
+	delete_temp = False
 
+	#We have an interface to sniff on
+	if if_name:
+		debug_out('Reading packets from interface ' + if_name)
+		try:
+			if user_args['count']:
+				sniff(store=0, iface=if_name, filter=user_args['bpf'], count=user_args['count'], prn=lambda x: processpacket(x))	# pylint: disable=unnecessary-lambda
+			else:
+				sniff(store=0, iface=if_name, filter=user_args['bpf'], prn=lambda x: processpacket(x))				# pylint: disable=unnecessary-lambda
+		except Scapy_Exception:
+			sys.stderr.write("Unable to open interface " + str(pcap_source) + ' .  Permission error?  Perhaps runs as root or under sudo?  Exiting.\n')
+			raise
+	#Read from stdin
+	elif pcap_source in ('-', None):
+		debug_out('Reading packets from stdin.')
+		tmp_packets = tempfile.NamedTemporaryFile(delete=True)
+		tmp_packets.write(sys.stdin.buffer.read())
+		tmp_packets.flush()
+		source_file = tmp_packets.name
+		close_temp = True
+	#Set up source packet file; next 2 sections check for and handle compressed file extensions first, then final "else" treats the source as a pcap file
+	elif pcap_source.endswith('.bz2'):
+		debug_out('Reading bzip2 compressed packets from file ' + pcap_source)
+		source_file = open_bzip2_file_to_tmp_file(pcap_source)
+		delete_temp = True
+	elif pcap_source.endswith('.gz'):
+		debug_out('Reading gzip compressed packets from file ' + pcap_source)
+		source_file = open_gzip_file_to_tmp_file(pcap_source)
+		delete_temp = True
+	else:
+		debug_out('Reading packets from file ' + pcap_source)
+		source_file = pcap_source
+
+	#Try to process file first
+	if source_file:
+		try:
+			if user_args['count']:
+				sniff(store=0, offline=source_file, filter=user_args['bpf'], count=user_args['count'], prn=lambda x: processpacket(x))	# pylint: disable=unnecessary-lambda
+			else:
+				sniff(store=0, offline=source_file, filter=user_args['bpf'], prn=lambda x: processpacket(x))				# pylint: disable=unnecessary-lambda
+		except IOError:
+			sys.stderr.write("Unable to open file " + str(pcap_source) + ', exiting.\n')
+			raise
+
+	if close_temp:
+		tmp_packets.close()
+
+	if delete_temp and source_file != pcap_source and os.path.exists(source_file):
+		os.remove(source_file)
 
 
 hints = {'TCP_FLAGS_': 'Invalid/no_tcp_flags', 'TCP_FLAGS_SR': 'Invalid/syn_and_rst', 'TCP_FLAGS_FRA': 'Invalid/fin_and_rst', 'TCP_FLAGS_FSPEC': 'Invalid/fin_and_syn', 'TCP_FLAGS_FSPU': 'Invalid/fin_and_syn', 'TCP_FLAGS_FSRPAU': 'Invalid/fin_and_syn_and_rst', 'TCP_FLAGS_FSRPAUEN': 'Invalid/fin_and_syn_and_rst_christmas_tree',
@@ -570,7 +617,7 @@ hints = {'TCP_FLAGS_': 'Invalid/no_tcp_flags', 'TCP_FLAGS_SR': 'Invalid/syn_and_
          'tcp_1723': 'pptp',
          'tcp_1935': 'rtmp', 'tcp_1984': 'bigbrother',
          'tcp_3128': 'squid_proxy', 'tcp_3306': 'mysql', 'tcp_3389': 'remote_desktop_protocol', 'tcp_3478': 'webrtc',
-         'tcp_5223': 'apple_push_notification', 'tcp_5060': 'sip', 'tcp_5601': 'kibana', 'tcp_5900': 'vnc/remote_framebuffer', 'tcp_5938': 'teamviewer',
+         'tcp_5060': 'sip', 'tcp_5223': 'apple_push_notification', 'tcp_5228': 'google_talk', 'tcp_5601': 'kibana', 'tcp_5900': 'vnc/remote_framebuffer', 'tcp_5938': 'teamviewer',
          'tcp_6379': 'redis',
          'tcp_8008': 'apple_ical', 'tcp_8333': 'bitcoin',
          'tcp_9200': 'elasticsearch'}
@@ -617,36 +664,28 @@ if __name__ == '__main__':
 	except:
 		config.use_pcap = True
 
+	read_from_stdin = False		#If stdin requested, it needs to be processed last, so we remember it here.  We also handle the case where the user enters '-' more than once by simply remembering it.
+	if cl_args['interface'] is None and cl_args['read'] == []:
+		debug_out('No source specified, reading from stdin.')
+		read_from_stdin = True
+
 	try:
+		if cl_args['read']:
+			#Process normal files first.
+			data_source = str(cl_args['read'])
+			for one_source in cl_args['read']:
+				if one_source == '-':
+					read_from_stdin = True
+				else:
+					process_packet_source(None, one_source, cl_args)
+
+		#Now that normal files are out of the way process stdin and/or reading from an interface, either of which could be infinite.
+		if read_from_stdin:
+			process_packet_source(None, '-', cl_args)
+
 		if cl_args['interface']:
 			data_source = str(cl_args['interface'])
-			try:
-				if cl_args['count']:
-					sniff(store=0, iface=cl_args['interface'], filter=cl_args['bpf'], count=cl_args['count'], prn=lambda x: processpacket(x))	# pylint: disable=unnecessary-lambda
-				else:
-					sniff(store=0, iface=cl_args['interface'], filter=cl_args['bpf'], prn=lambda x: processpacket(x))				# pylint: disable=unnecessary-lambda
-			except Scapy_Exception:
-				debug_out('Attempt to listen on an interface failed: are you running this as root or under sudo?')
-			sys.stderr.write('\n')
-			sys.stderr.flush()
-		elif cl_args['read']:
-			data_source = str(cl_args['read'])
-			for one_pcap in cl_args['read']:
-				if os.path.exists(one_pcap):
-					if os.access(one_pcap, os.R_OK):
-						if cl_args['count']:
-							sniff(store=0, offline=one_pcap, filter=cl_args['bpf'], count=cl_args['count'], prn=lambda x: processpacket(x))	# pylint: disable=unnecessary-lambda
-						else:
-							sniff(store=0, offline=one_pcap, filter=cl_args['bpf'], prn=lambda x: processpacket(x))				# pylint: disable=unnecessary-lambda
-					else:
-						debug_out(str(one_pcap) + ' unreadable, skipping.')
-				else:
-					debug_out(one_pcap + " does not appear to exist, skipping.")
-			sys.stderr.write('\n')
-			sys.stderr.flush()
-		else:
-			debug_out("No interface or pcap file specified, exiting.")
-			sys.exit(1)
+			process_packet_source(cl_args['interface'], None, cl_args)
 	except KeyboardInterrupt:
 		pass
 
