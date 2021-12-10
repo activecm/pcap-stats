@@ -5,7 +5,7 @@
 #Internet gave thousands of us a chance to learn and grow.
 
 
-__version__ = '0.0.32'
+__version__ = '0.0.37'
 
 __author__ = 'William Stearns'
 __copyright__ = 'Copyright 2021, William Stearns'
@@ -95,7 +95,7 @@ def packet_layers(pkt):
 	#Sample return	['Ethernet', 'IP', 'TCP']
 
 
-def packet_len(packet, whichlayer):
+def packet_len(packet, whichlayer):													# pylint: disable=unused-argument
 	"""Finds the appropriate length of the packet based on user preference."""
 	#FIXME - only the IP/IPv6 option works at the moment.
 
@@ -111,6 +111,7 @@ def packet_len(packet, whichlayer):
 		elif packet.haslayer(ARP):
 			#p[ARP].len returns the ARP header onwards, but not the ethernet header above it.
 			pack_len = packet[ARP].plen
+		#FIXME - add else: here to handle other types
 	#elif cl_args['length'] == 'layer':
 	#	pack_len = 0
 	#	if packet.haslayer(IP):
@@ -189,6 +190,7 @@ def processpacket(p):
 
 	if "ipv4s_for_mac" not in processpacket.__dict__:
 		processpacket.ipv4s_for_mac = {}
+	#FIXME - ipv6 too?
 
 	if 'hosts_for_ip' not in processpacket.__dict__:		#Dictionary; keys are IP addresses, values are sets of hostnames
 		processpacket.hosts_for_ip = {}
@@ -265,9 +267,7 @@ def processpacket(p):
 		sIP = None
 		dIP = None
 
-	inc_stats.p_stats['count'][0] += 1
-	inc_stats.p_stats['count'][1] += p_len
-	#sys.stderr.write('.')
+	inc_stats('count', p_len)
 
 	if sIP and sIP != '0.0.0.0' and ':' not in sIP and not sIP.startswith('169.254.') and p.haslayer(Ether):	#We remember all the IPv4 addresses associated with a particular mac to decide later whether a mac address is a router.
 		sMAC = p.getlayer(Ether).src
@@ -279,6 +279,24 @@ def processpacket(p):
 		if a_layer not in ignore_layers:
 			inc_stats(a_layer, p_len)
 
+	if p.haslayer(Ether):
+		if p[Ether].dst == 'ff:ff:ff:ff:ff:ff':
+			label = 'ethernet_broadcast'
+			inc_stats(label, p_len)
+			processpacket.field_filter[label] = 'ether broadcast'
+		elif p[Ether].dst.startswith(('01:00:5e:', '33:33:', '01:80:c2:')):
+			label = 'ethernet_multicast'
+			inc_stats(label, p_len)
+			processpacket.field_filter[label] = 'ether multicast'
+		else:
+			label = 'ethernet_unicast'
+			inc_stats(label, p_len)
+			processpacket.field_filter[label] = 'not (ether broadcast) and not (ether multicast)'
+	else:
+		label = 'non_ethernet'
+		inc_stats(label, p_len)
+		#processpacket.field_filter[label] = '...'	#unsure
+
 
 	if p.haslayer(DNS) and (isinstance(p[DNS], DNS)):
 		dns_tuples = DNS_extract(p, meta, prefs, dests)
@@ -287,9 +305,10 @@ def processpacket(p):
 		for one_tuple in dns_tuples:
 			if one_tuple[0] == 'DN':
 				if one_tuple[2] in ('A', 'AAAA', 'PTR', 'CNAME'):
-					if one_tuple[1] not in processpacket.hosts_for_ip:
-						processpacket.hosts_for_ip[one_tuple[1]] = set()
-					processpacket.hosts_for_ip[one_tuple[1]].add(one_tuple[3])
+					if one_tuple[1]:					#Check that the IP field is not empty
+						if one_tuple[1] not in processpacket.hosts_for_ip:
+							processpacket.hosts_for_ip[one_tuple[1]] = set()
+						processpacket.hosts_for_ip[one_tuple[1]].add(one_tuple[3])
 				#else:
 				#	print(str(one_tuple))
 			elif one_tuple[0] in ('US', 'UC', 'TS', 'IP'):
@@ -360,8 +379,8 @@ def processpacket(p):
 			label = 'tcp_' + str(t_layer.dport)
 			inc_stats(label, p_len)
 			processpacket.field_filter[label] = 'tcp port ' + str(t_layer.dport)
-		elif t_layer.sport in tcp_ignore_ports and t_layer.dport in tcp_ignore_ports:
-			pass
+		#elif t_layer.sport in tcp_ignore_ports and t_layer.dport in tcp_ignore_ports:		#Was used for early troubleshooting, no longer needed.
+		#	pass
 		else:
 			debug_out("No tcp server port: " + str(t_layer.sport) + " " + str(t_layer.dport))
 			#p.show()
@@ -388,8 +407,8 @@ def processpacket(p):
 			label = 'udp_' + str(u_layer.dport)
 			inc_stats(label, p_len)
 			processpacket.field_filter[label] = 'udp port ' + str(u_layer.dport)
-		elif u_layer.sport in udp_ignore_ports and u_layer.dport in udp_ignore_ports:
-			pass
+		#elif u_layer.sport in udp_ignore_ports and u_layer.dport in udp_ignore_ports:		#Was used for early troubleshooting, no longer needed.
+		#	pass
 		else:
 			label = 'udp_' + str(u_layer.sport)
 			inc_stats(label, p_len)
@@ -436,7 +455,7 @@ def processpacket(p):
 		sys.exit(92)
 
 
-def hints_for(proto_desc, local_info):
+def hints_for(proto_desc, local_info, name_list):
 	"""For a given protocol, return the appropriate hint information to go in field 5 of the output."""
 
 	hint_return = ''
@@ -461,6 +480,11 @@ def hints_for(proto_desc, local_info):
 		hint_return += ' ' + local_info
 	elif local_info:
 		hint_return = local_info
+
+	if hint_return and name_list:
+		hint_return += ' ' + name_list
+	elif name_list:
+		hint_return = name_list
 
 
 	return hint_return
@@ -491,26 +515,28 @@ def print_stats(mincount_to_show, minsize_to_show, out_format, source_string):
 
 		for one_key in sorted(inc_stats.p_stats.keys()):
 			if inc_stats.p_stats[one_key][0] >= mincount_to_show and inc_stats.p_stats[one_key][1] >= minsize_to_show:
+				orig_ip_names = ''
 				desc = one_key.replace(' ', '_')
 				orig_ip = desc.replace('ip4_', '').replace('ip6_', '')
 				full_ip = explode_ip(orig_ip, {}, {})
 				if full_ip in processpacket.hosts_for_ip:
 					orig_ip_names = str(processpacket.hosts_for_ip[full_ip])
-				else:
-					orig_ip_names = ''
+
 				is_local = ''
 				if orig_ip in processpacket.local_ips:
 					is_local = 'local'
 
 					for one_mac in processpacket.ipv4s_for_mac.keys():
-						if orig_ip in processpacket.ipv4s_for_mac[one_mac] and len(processpacket.ipv4s_for_mac[one_mac]) > 1:
+						if orig_ip in processpacket.ipv4s_for_mac[one_mac] and len(processpacket.ipv4s_for_mac[one_mac]) > 10:
+							is_local = 'local ipv4router ' + str(list(processpacket.ipv4s_for_mac[one_mac])[0:10]) + '..., ' + str(len(processpacket.ipv4s_for_mac[one_mac])) + ' entries.'
+						elif orig_ip in processpacket.ipv4s_for_mac[one_mac] and len(processpacket.ipv4s_for_mac[one_mac]) > 1:
 							is_local = 'local ipv4router ' + str(processpacket.ipv4s_for_mac[one_mac])
 
 				try:
 					if out_format == 'html':
-						print("<tr><td align=right>{0:}</td><td align=right>{1}</td><td>{2}</td><td>{3}</td><td>{4}</td></tr>".format(inc_stats.p_stats[one_key][0], inc_stats.p_stats[one_key][1], desc, processpacket.field_filter.get(one_key, ''), ' '.join([hints_for(desc, is_local), orig_ip_names])))
+						print("<tr><td align=right>{0:}</td><td align=right>{1}</td><td>{2}</td><td>{3}</td><td>{4}</td></tr>".format(inc_stats.p_stats[one_key][0], inc_stats.p_stats[one_key][1], desc, processpacket.field_filter.get(one_key, ''), hints_for(desc, is_local, orig_ip_names)))
 					elif out_format == 'ascii':
-						print("{0:>10d} {1:>13d} {2:60s} {3:48s} {4:30s}".format(inc_stats.p_stats[one_key][0], inc_stats.p_stats[one_key][1], desc, processpacket.field_filter.get(one_key, ''), ' '.join([hints_for(desc, is_local), orig_ip_names])))
+						print("{0:>10d} {1:>13d} {2:60s} {3:48s} {4:30s}".format(inc_stats.p_stats[one_key][0], inc_stats.p_stats[one_key][1], desc, processpacket.field_filter.get(one_key, ''), hints_for(desc, is_local, orig_ip_names)))
 				except BrokenPipeError:
 					sys.exit(0)
 		if out_format == 'html':
@@ -535,14 +561,14 @@ def process_packet_source(if_name, pcap_source, user_args):
 			if user_args['count']:
 				sniff(store=0, iface=if_name, filter=user_args['bpf'], count=user_args['count'], prn=lambda x: processpacket(x))	# pylint: disable=unnecessary-lambda
 			else:
-				sniff(store=0, iface=if_name, filter=user_args['bpf'], prn=lambda x: processpacket(x))				# pylint: disable=unnecessary-lambda
+				sniff(store=0, iface=if_name, filter=user_args['bpf'], prn=lambda x: processpacket(x))					# pylint: disable=unnecessary-lambda
 		except Scapy_Exception:
 			sys.stderr.write("Unable to open interface " + str(pcap_source) + ' .  Permission error?  Perhaps runs as root or under sudo?  Exiting.\n')
 			raise
 	#Read from stdin
 	elif pcap_source in ('-', None):
 		debug_out('Reading packets from stdin.')
-		tmp_packets = tempfile.NamedTemporaryFile(delete=True)
+		tmp_packets = tempfile.NamedTemporaryFile(delete=True)											# pylint: disable=consider-using-with
 		tmp_packets.write(sys.stdin.buffer.read())
 		tmp_packets.flush()
 		source_file = tmp_packets.name
@@ -598,6 +624,7 @@ hints = {'TCP_FLAGS_': 'Invalid/no_tcp_flags', 'TCP_FLAGS_SR': 'Invalid/syn_and_
          'udp_500': 'isakmp/ike', 'udp_514': 'syslog', 'udp_520': 'rip', 'udp_546': 'dhcpv6_client', 'udp_547': 'dhcpv6',
          'udp_1194': 'openvpn',
          'udp_1434': 'mssql_monitor', 'udp_1853': 'videoconf/gotowebinar', 'udp_1900': 'ssdp/upnp',
+         'udp_1812': 'radius',
          'udp_3389': 'remote_desktop_protocol', 'udp_3478': 'webrtc', 'udp_3479': 'webrtc', 'udp_3480': 'webrtc', 'udp_3481': 'webrtc', 'udp_3702': 'web_services_discovery',
          'udp_4500': 'ipsec_nat_traversal', 'udp_4501': 'globalprotect_vpn', 'udp_4789': 'vxlan',
          'udp_5002': 'drobo_discovery', 'udp_5060': 'sip', 'udp_5353': 'mDNS', 'udp_5355': 'LLMNR', 'udp_5938': 'teamviewer',
@@ -605,11 +632,21 @@ hints = {'TCP_FLAGS_': 'Invalid/no_tcp_flags', 'TCP_FLAGS_SR': 'Invalid/syn_and_
          'udp_15509': 'videoconf/zoom',
          'udp_17500': 'dropbox_lan_sync',
          'udp_19305': 'google_meet',
-         'tcp_7': 'echo', 'tcp_11': 'systat', 'tcp_19': 'chargen', 'tcp_20': 'ftp-data', 'tcp_21': 'ftp', 'tcp_22': 'ssh', 'tcp_23': 'telnet', 'tcp_25': 'smtp', 'tcp_43': 'whois', 'tcp_53': 'dns', 'tcp_79': 'finger', 'tcp_80': 'http', 'tcp_88': 'kerberos',
-         'tcp_109': 'pop2', 'tcp_110': 'pop3', 'tcp_111': 'rpc', 'tcp_113': 'ident/auth', 'tcp_135': 'ms_rpc_endpoint_mapper', 'tcp_139': 'netbios/session', 'tcp_143': 'imap', 'tcp_179': 'bgp',
+         'udp_33434': 'traceroute/udp', 'udp_33435': 'traceroute/udp', 'udp_33436': 'traceroute/udp', 'udp_33437': 'traceroute/udp', 'udp_33438': 'traceroute/udp', 'udp_33439': 'traceroute/udp',
+         'udp_33440': 'traceroute/udp', 'udp_33441': 'traceroute/udp', 'udp_33442': 'traceroute/udp', 'udp_33443': 'traceroute/udp', 'udp_33444': 'traceroute/udp', 'udp_33445': 'traceroute/udp', 'udp_33446': 'traceroute/udp', 'udp_33447': 'traceroute/udp', 'udp_33448': 'traceroute/udp', 'udp_33449': 'traceroute/udp',
+         'udp_33450': 'traceroute/udp', 'udp_33451': 'traceroute/udp', 'udp_33452': 'traceroute/udp', 'udp_33453': 'traceroute/udp', 'udp_33454': 'traceroute/udp', 'udp_33455': 'traceroute/udp', 'udp_33456': 'traceroute/udp', 'udp_33457': 'traceroute/udp', 'udp_33458': 'traceroute/udp', 'udp_33459': 'traceroute/udp',
+         'udp_33460': 'traceroute/udp', 'udp_33461': 'traceroute/udp', 'udp_33462': 'traceroute/udp', 'udp_33463': 'traceroute/udp', 'udp_33464': 'traceroute/udp', 'udp_33465': 'traceroute/udp', 'udp_33466': 'traceroute/udp', 'udp_33467': 'traceroute/udp', 'udp_33468': 'traceroute/udp', 'udp_33469': 'traceroute/udp',
+         'udp_33470': 'traceroute/udp', 'udp_33471': 'traceroute/udp', 'udp_33472': 'traceroute/udp', 'udp_33473': 'traceroute/udp', 'udp_33474': 'traceroute/udp', 'udp_33475': 'traceroute/udp', 'udp_33476': 'traceroute/udp', 'udp_33477': 'traceroute/udp', 'udp_33478': 'traceroute/udp', 'udp_33479': 'traceroute/udp',
+         'udp_33480': 'traceroute/udp', 'udp_33481': 'traceroute/udp', 'udp_33482': 'traceroute/udp', 'udp_33483': 'traceroute/udp', 'udp_33484': 'traceroute/udp', 'udp_33485': 'traceroute/udp', 'udp_33486': 'traceroute/udp', 'udp_33487': 'traceroute/udp', 'udp_33488': 'traceroute/udp', 'udp_33489': 'traceroute/udp',
+         'udp_33490': 'traceroute/udp', 'udp_33491': 'traceroute/udp', 'udp_33492': 'traceroute/udp', 'udp_33493': 'traceroute/udp', 'udp_33494': 'traceroute/udp', 'udp_33495': 'traceroute/udp', 'udp_33496': 'traceroute/udp', 'udp_33497': 'traceroute/udp', 'udp_33498': 'traceroute/udp', 'udp_33499': 'traceroute/udp',
+         'udp_33500': 'traceroute/udp', 'udp_33501': 'traceroute/udp', 'udp_33502': 'traceroute/udp', 'udp_33503': 'traceroute/udp', 'udp_33504': 'traceroute/udp', 'udp_33505': 'traceroute/udp', 'udp_33506': 'traceroute/udp', 'udp_33507': 'traceroute/udp', 'udp_33508': 'traceroute/udp', 'udp_33509': 'traceroute/udp',
+         'udp_33510': 'traceroute/udp', 'udp_33511': 'traceroute/udp', 'udp_33512': 'traceroute/udp', 'udp_33513': 'traceroute/udp', 'udp_33514': 'traceroute/udp', 'udp_33515': 'traceroute/udp', 'udp_33516': 'traceroute/udp', 'udp_33517': 'traceroute/udp', 'udp_33518': 'traceroute/udp', 'udp_33519': 'traceroute/udp',
+         'udp_33520': 'traceroute/udp', 'udp_33521': 'traceroute/udp', 'udp_33522': 'traceroute/udp', 'udp_33523': 'traceroute/udp',
+         'tcp_7': 'echo', 'tcp_11': 'systat', 'tcp_13': 'daytime', 'tcp_19': 'chargen', 'tcp_20': 'ftp-data', 'tcp_21': 'ftp', 'tcp_22': 'ssh', 'tcp_23': 'telnet', 'tcp_25': 'smtp', 'tcp_37': 'time', 'tcp_42': 'name', 'tcp_43': 'whois', 'tcp_53': 'dns', 'tcp_79': 'finger', 'tcp_80': 'http', 'tcp_88': 'kerberos',
+         'tcp_109': 'pop2', 'tcp_110': 'pop3', 'tcp_111': 'rpc', 'tcp_113': 'ident/auth', 'tcp_119': 'nntp', 'tcp_135': 'ms_rpc_endpoint_mapper', 'tcp_139': 'netbios/session', 'tcp_143': 'imap', 'tcp_179': 'bgp',
          'tcp_389': 'ldap',
          'tcp_443': 'https', 'tcp_445': 'microsoft-ds', 'tcp_465': 'smtps',
-         'tcp_587': 'smtp/msa',
+         'tcp_512': 'r-commands/rexec', 'tcp_513': 'r-commands/rlogin', 'tcp_514': 'r-commands/rsh_rcp', 'tcp_587': 'smtp/msa',
          'tcp_873': 'rsync',
          'tcp_989': 'ftps-data', 'tcp_990': 'ftps', 'tcp_993': 'imaps',
          'tcp_1194': 'openvpn',
@@ -619,7 +656,7 @@ hints = {'TCP_FLAGS_': 'Invalid/no_tcp_flags', 'TCP_FLAGS_SR': 'Invalid/syn_and_
          'tcp_3128': 'squid_proxy', 'tcp_3306': 'mysql', 'tcp_3389': 'remote_desktop_protocol', 'tcp_3478': 'webrtc',
          'tcp_5060': 'sip', 'tcp_5223': 'apple_push_notification', 'tcp_5228': 'google_talk', 'tcp_5601': 'kibana', 'tcp_5900': 'vnc/remote_framebuffer', 'tcp_5938': 'teamviewer',
          'tcp_6379': 'redis',
-         'tcp_8008': 'apple_ical', 'tcp_8333': 'bitcoin',
+         'tcp_8008': 'apple_ical', 'tcp_8080': 'http-alt', 'tcp_8333': 'bitcoin',
          'tcp_9200': 'elasticsearch'}
 
 #The following are _sub_layers; additional details underneath a main layer, such as SNMPBulk under SNMP.
@@ -636,8 +673,8 @@ ignore_layers = ('DHCP options',
 		 'SNMPbulk', 'SNMPget', 'SNMPnext', 'SNMPvarbind',
 		 'vendor_class_data')
 
-tcp_ignore_ports = (123, 20547, 33046, 39882)
-udp_ignore_ports = (10400, 10401, 16403, 38010)
+#tcp_ignore_ports = (123, 20547, 33046, 39882)		#Was used for early troubleshooting, no longer needed.
+#udp_ignore_ports = (10400, 10401, 16403, 38010)
 
 
 if __name__ == '__main__':
@@ -656,7 +693,6 @@ if __name__ == '__main__':
 	(parsed, unparsed) = parser.parse_known_args()
 	cl_args = vars(parsed)
 
-	data_source = 'unknown'
 
 	#We have to use libpcap instead of scapy's built-in code because the latter won't attach complex bpfs
 	try:
@@ -665,14 +701,23 @@ if __name__ == '__main__':
 		config.use_pcap = True
 
 	read_from_stdin = False		#If stdin requested, it needs to be processed last, so we remember it here.  We also handle the case where the user enters '-' more than once by simply remembering it.
-	if cl_args['interface'] is None and cl_args['read'] == []:
+	if cl_args['interface'] and cl_args['read']:
+		data_source = str(cl_args['interface']) + ' ' + str(cl_args['read'])
+	elif cl_args['interface']:
+		data_source = str(cl_args['interface'])
+	elif cl_args['read']:
+		data_source = str(cl_args['read'])
+	else:
+		#elif cl_args['interface'] is None and cl_args['read'] == []:
 		debug_out('No source specified, reading from stdin.')
 		read_from_stdin = True
+		data_source = 'stdin'
+
+
 
 	try:
 		if cl_args['read']:
 			#Process normal files first.
-			data_source = str(cl_args['read'])
 			for one_source in cl_args['read']:
 				if one_source == '-':
 					read_from_stdin = True
@@ -684,7 +729,6 @@ if __name__ == '__main__':
 			process_packet_source(None, '-', cl_args)
 
 		if cl_args['interface']:
-			data_source = str(cl_args['interface'])
 			process_packet_source(cl_args['interface'], None, cl_args)
 	except KeyboardInterrupt:
 		pass
