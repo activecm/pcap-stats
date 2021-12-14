@@ -5,7 +5,7 @@
 #Internet gave thousands of us a chance to learn and grow.
 
 
-__version__ = '0.0.37'
+__version__ = '0.0.40'
 
 __author__ = 'William Stearns'
 __copyright__ = 'Copyright 2021, William Stearns'
@@ -21,6 +21,7 @@ import os
 import sys
 import time
 import tempfile
+import shelve
 import gzip												#Lets us read from gzip-compressed pcap files
 import bz2												#Lets us read from bzip2-compressed pcap files
 
@@ -47,6 +48,32 @@ def debug_out(output_string):
 	if cl_args['devel']:
 		sys.stderr.write(output_string + '\n')
 		sys.stderr.flush()
+
+
+def force_string(raw_string):
+	"""Make sure the returned object is a string."""
+
+	retval = raw_string
+
+	if sys.version_info > (3, 0):		#Python 3
+		if isinstance(raw_string, bytes):
+			retval = raw_string.decode("utf-8", 'replace')
+		elif isinstance(raw_string, str):
+			pass
+		elif isinstance(raw_string, list):
+			retval = ' '.join([force_string(listitem) for listitem in raw_string])
+			#print(str(type(raw_string)))
+			#print("huh:" + str(raw_string))
+			#sys.exit()
+		else:
+			print(str(type(raw_string)))
+			print("huh:" + str(raw_string))
+			sys.exit()
+			retval = str(raw_string)
+	else:
+		retval = str(raw_string)
+
+	return retval
 
 
 def open_bzip2_file_to_tmp_file(bzip2_filename):
@@ -175,7 +202,7 @@ def processpacket(p):
 		#F	FIN		  0x01
 
 	if "tcp_server_ports" not in processpacket.__dict__:
-		processpacket.tcp_server_ports = [7, 13, 21, 22, 23, 25, 53, 79, 80, 88, 110, 111, 113, 135, 139, 143, 389, 443, 445, 514, 902, 990, 993, 995, 1433, 1521, 1723, 3128, 3306, 3389, 5000, 5060, 5223, 5228, 5432, 5601, 5900, 7070, 8008, 8009, 8080, 8088, 8443, 9200, 9443]
+		processpacket.tcp_server_ports = [7, 13, 21, 22, 23, 25, 53, 79, 80, 88, 110, 111, 113, 135, 139, 143, 389, 443, 445, 514, 631, 902, 990, 993, 995, 1433, 1521, 1723, 2222, 3128, 3306, 3389, 5000, 5060, 5223, 5228, 5432, 5601, 5900, 7070, 7680, 8008, 8009, 8080, 8088, 8333, 8443, 9200, 9443]
 
 	if "udp_server_ports" not in processpacket.__dict__:
 		processpacket.udp_server_ports = [7, 53, 67, 123, 137, 138, 192, 443, 1900, 2190, 5002, 5353, 5355, 8200, 16384, 16385, 16386, 17500, 19305, 56833, 60682, 62988]
@@ -194,6 +221,7 @@ def processpacket(p):
 
 	if 'hosts_for_ip' not in processpacket.__dict__:		#Dictionary; keys are IP addresses, values are sets of hostnames
 		processpacket.hosts_for_ip = {}
+		#FIXME - add netbios names too?
 
 	p_layers = packet_layers(p)
 
@@ -305,16 +333,17 @@ def processpacket(p):
 		for one_tuple in dns_tuples:
 			if one_tuple[0] == 'DN':
 				if one_tuple[2] in ('A', 'AAAA', 'PTR', 'CNAME'):
-					if one_tuple[1]:					#Check that the IP field is not empty
-						if one_tuple[1] not in processpacket.hosts_for_ip:
-							processpacket.hosts_for_ip[one_tuple[1]] = set()
-						processpacket.hosts_for_ip[one_tuple[1]].add(one_tuple[3])
+					if one_tuple[1] and one_tuple[3]:				#Check that the IP and hostname fields are not empty
+						ip_string = force_string(one_tuple[1])
+						if ip_string not in processpacket.hosts_for_ip:
+							processpacket.hosts_for_ip[ip_string] = set()
+						processpacket.hosts_for_ip[ip_string].add(force_string(one_tuple[3]))
 				#else:
 				#	print(str(one_tuple))
 			elif one_tuple[0] in ('US', 'UC', 'TS', 'IP'):
 				pass
 			else:
-				print(str(one_tuple))
+				debug_out(str(one_tuple))
 
 	if sIP != '::':
 		if ttl == 255:										#The system is sending a broadcast - it must be local
@@ -494,6 +523,16 @@ def print_stats(mincount_to_show, minsize_to_show, out_format, source_string):
 	"""Show statistics"""
 
 	if "p_stats" in inc_stats.__dict__:
+
+		hostcache_state = ''
+		hostcache_updates_needed = []
+		try:
+			persistent_hosts_for_ip = shelve.open(ip_names_cache, flag='r')
+			hostcache_state = 'readonly'
+		except:
+			debug_out('Unable to open ip_names cache for reading')
+			persistent_hosts_for_ip = {}
+
 		if out_format == 'html':
 			print('<html>')
 			print('<head>')
@@ -514,14 +553,21 @@ def print_stats(mincount_to_show, minsize_to_show, out_format, source_string):
 			print("Elapsed_time: " + str(processpacket.maxstamp - processpacket.minstamp))
 
 		for one_key in sorted(inc_stats.p_stats.keys()):
-			if inc_stats.p_stats[one_key][0] >= mincount_to_show and inc_stats.p_stats[one_key][1] >= minsize_to_show:
+			desc = one_key.replace(' ', '_')
+			orig_ip = desc.replace('ip4_', '').replace('ip6_', '')
+			full_ip = explode_ip(orig_ip, {}, {})
+			if full_ip in processpacket.hosts_for_ip and full_ip in persistent_hosts_for_ip:
+				orig_ip_names = str(processpacket.hosts_for_ip[full_ip].union(persistent_hosts_for_ip[full_ip]))
+				if not processpacket.hosts_for_ip[full_ip].issubset(persistent_hosts_for_ip[full_ip]):
+					hostcache_updates_needed.append(full_ip)
+			elif full_ip in processpacket.hosts_for_ip:
+				orig_ip_names = str(processpacket.hosts_for_ip[full_ip])
+				hostcache_updates_needed.append(full_ip)
+			elif full_ip in persistent_hosts_for_ip:
+				orig_ip_names = str(persistent_hosts_for_ip[full_ip])
+			else:
 				orig_ip_names = ''
-				desc = one_key.replace(' ', '_')
-				orig_ip = desc.replace('ip4_', '').replace('ip6_', '')
-				full_ip = explode_ip(orig_ip, {}, {})
-				if full_ip in processpacket.hosts_for_ip:
-					orig_ip_names = str(processpacket.hosts_for_ip[full_ip])
-
+			if inc_stats.p_stats[one_key][0] >= mincount_to_show and inc_stats.p_stats[one_key][1] >= minsize_to_show:
 				is_local = ''
 				if orig_ip in processpacket.local_ips:
 					is_local = 'local'
@@ -542,6 +588,27 @@ def print_stats(mincount_to_show, minsize_to_show, out_format, source_string):
 		if out_format == 'html':
 			print('</table>')
 			print('</body></html>')
+
+
+		if hostcache_state:
+			persistent_hosts_for_ip.close()
+
+		if hostcache_updates_needed:
+			try:
+				persistent_hosts_for_ip = shelve.open(ip_names_cache, writeback=True)
+				hostcache_state = 'readwrite'
+
+				for full_ip in hostcache_updates_needed:
+					if full_ip in persistent_hosts_for_ip:
+						new_hostlist = processpacket.hosts_for_ip[full_ip].union(persistent_hosts_for_ip[full_ip])
+					else:
+						new_hostlist = processpacket.hosts_for_ip[full_ip]
+					debug_out(str(full_ip) + ': ' + str(new_hostlist))
+					persistent_hosts_for_ip[full_ip] = new_hostlist
+
+				persistent_hosts_for_ip.close()
+			except:
+				debug_out('Unable to open ip_names cache for writing')
 	else:
 		sys.stderr.write('It does not appear any packets were read.  Exiting.\n')
 		sys.stderr.flush()
@@ -647,6 +714,7 @@ hints = {'TCP_FLAGS_': 'Invalid/no_tcp_flags', 'TCP_FLAGS_SR': 'Invalid/syn_and_
          'tcp_389': 'ldap',
          'tcp_443': 'https', 'tcp_445': 'microsoft-ds', 'tcp_465': 'smtps',
          'tcp_512': 'r-commands/rexec', 'tcp_513': 'r-commands/rlogin', 'tcp_514': 'r-commands/rsh_rcp', 'tcp_587': 'smtp/msa',
+         'tcp_631': 'ipp',
          'tcp_873': 'rsync',
          'tcp_989': 'ftps-data', 'tcp_990': 'ftps', 'tcp_993': 'imaps',
          'tcp_1194': 'openvpn',
@@ -656,6 +724,7 @@ hints = {'TCP_FLAGS_': 'Invalid/no_tcp_flags', 'TCP_FLAGS_SR': 'Invalid/syn_and_
          'tcp_3128': 'squid_proxy', 'tcp_3306': 'mysql', 'tcp_3389': 'remote_desktop_protocol', 'tcp_3478': 'webrtc',
          'tcp_5060': 'sip', 'tcp_5223': 'apple_push_notification', 'tcp_5228': 'google_talk', 'tcp_5601': 'kibana', 'tcp_5900': 'vnc/remote_framebuffer', 'tcp_5938': 'teamviewer',
          'tcp_6379': 'redis',
+         'tcp_7680': 'windows/delivery_optimization',
          'tcp_8008': 'apple_ical', 'tcp_8080': 'http-alt', 'tcp_8333': 'bitcoin',
          'tcp_9200': 'elasticsearch'}
 
@@ -676,6 +745,7 @@ ignore_layers = ('DHCP options',
 #tcp_ignore_ports = (123, 20547, 33046, 39882)		#Was used for early troubleshooting, no longer needed.
 #udp_ignore_ports = (10400, 10401, 16403, 38010)
 
+ip_names_cache = os.environ["HOME"] + '/.cache/ip_names'
 
 if __name__ == '__main__':
 	import argparse
