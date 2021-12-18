@@ -5,7 +5,7 @@
 #Internet gave thousands of us a chance to learn and grow.
 
 
-__version__ = '0.0.40'
+__version__ = '0.0.43'
 
 __author__ = 'William Stearns'
 __copyright__ = 'Copyright 2021, William Stearns'
@@ -24,6 +24,7 @@ import tempfile
 import shelve
 import gzip												#Lets us read from gzip-compressed pcap files
 import bz2												#Lets us read from bzip2-compressed pcap files
+import re												#Regex matching on UUID hostnames
 
 try:
 	#from scapy.all import *
@@ -183,7 +184,7 @@ def processpacket(p):
 		'TCP_FLAGS_A': 'tcp[12:2] & 0x01ff = 0x0010', 'TCP_FLAGS_FA': 'tcp[12:2] & 0x01ff = 0x0011', 'TCP_FLAGS_SA': 'tcp[12:2] & 0x01ff = 0x0012', 'TCP_FLAGS_RA': 'tcp[12:2] & 0x01ff = 0x0014', 'TCP_FLAGS_FRA': 'tcp[12:2] & 0x01ff = 0x0015', 'TCP_FLAGS_PA': 'tcp[12:2] & 0x01ff = 0x0018', 'TCP_FLAGS_FPA': 'tcp[12:2] & 0x01ff = 0x0019', 'TCP_FLAGS_RPA': 'tcp[12:2] & 0x01ff = 0x001C',
 		'TCP_FLAGS_U': 'tcp[12:2] & 0x01ff = 0x0020', 'TCP_FLAGS_SU': 'tcp[12:2] & 0x01ff = 0x0022', 'TCP_FLAGS_FPU': 'tcp[12:2] & 0x01ff = 0x0029', 'TCP_FLAGS_FSPU': 'tcp[12:2] & 0x01ff = 0x002b',
 		'TCP_FLAGS_SAU': 'tcp[12:2] & 0x01ff = 0x0032', 'TCP_FLAGS_FSRPAU': 'tcp[12:2] & 0x01ff = 0x003f',
-		'TCP_FLAGS_FAE': 'tcp[12:2] & 0x01ff = 0x0051', 'TCP_FLAGS_SAE': 'tcp[12:2] & 0x01ff = 0x0052',
+		'TCP_FLAGS_AE': 'tcp[12:2] & 0x01ff = 0x0050', 'TCP_FLAGS_FAE': 'tcp[12:2] & 0x01ff = 0x0051', 'TCP_FLAGS_SAE': 'tcp[12:2] & 0x01ff = 0x0052',
 		'TCP_FLAGS_AC': 'tcp[12:2] & 0x01ff = 0x0090', 'TCP_FLAGS_RAC': 'tcp[12:2] & 0x01ff = 0x0094', 'TCP_FLAGS_SPAC': 'tcp[12:2] & 0x01ff = 0x0095', 'TCP_FLAGS_PAC': 'tcp[12:2] & 0x01ff = 0x0098',
 		'TCP_FLAGS_SEC': 'tcp[12:2] & 0x01ff = 0x00c2', 'TCP_FLAGS_FSPEC': 'tcp[12:2] & 0x01ff = 0x00cb',
 		'TCP_FLAGS_SAEC': 'tcp[12:2] & 0x01ff = 0x00d2',
@@ -202,7 +203,7 @@ def processpacket(p):
 		#F	FIN		  0x01
 
 	if "tcp_server_ports" not in processpacket.__dict__:
-		processpacket.tcp_server_ports = [7, 13, 21, 22, 23, 25, 53, 79, 80, 88, 110, 111, 113, 135, 139, 143, 389, 443, 445, 514, 631, 902, 990, 993, 995, 1433, 1521, 1723, 2222, 3128, 3306, 3389, 5000, 5060, 5223, 5228, 5432, 5601, 5900, 7070, 7680, 8008, 8009, 8080, 8088, 8333, 8443, 9200, 9443]
+		processpacket.tcp_server_ports = [7, 13, 21, 22, 23, 25, 53, 79, 80, 88, 110, 111, 113, 135, 139, 143, 389, 443, 445, 514, 631, 902, 990, 993, 995, 1433, 1521, 1723, 2222, 3128, 3306, 3389, 5000, 5001, 5060, 5223, 5228, 5432, 5601, 5900, 7070, 7680, 8008, 8009, 8080, 8088, 8333, 8443, 9200, 9443, 49152]
 
 	if "udp_server_ports" not in processpacket.__dict__:
 		processpacket.udp_server_ports = [7, 53, 67, 123, 137, 138, 192, 443, 1900, 2190, 5002, 5353, 5355, 8200, 16384, 16385, 16386, 17500, 19305, 56833, 60682, 62988]
@@ -223,9 +224,12 @@ def processpacket(p):
 		processpacket.hosts_for_ip = {}
 		#FIXME - add netbios names too?
 
+	if 'ports_for_ip' not in processpacket.__dict__:		#Dictionary; keys are IP addresses, values are sets of ports used by this IP (specifically, the ports at the IP's end of the connection)
+		processpacket.ports_for_ip = {}
+
 	p_layers = packet_layers(p)
 
-	prefs = {'nxdomain': False, 'devel': cl_args['devel']}
+	prefs = {'nxdomain': False, 'devel': cl_args['devel'], 'quit': False}
 	dests = {'unhandled': None}
 	meta = generate_meta_from_packet(p, prefs, dests)
 
@@ -297,6 +301,7 @@ def processpacket(p):
 
 	inc_stats('count', p_len)
 
+	#FIXME - do ipv6 too
 	if sIP and sIP != '0.0.0.0' and ':' not in sIP and not sIP.startswith('169.254.') and p.haslayer(Ether):	#We remember all the IPv4 addresses associated with a particular mac to decide later whether a mac address is a router.
 		sMAC = p.getlayer(Ether).src
 		if sMAC not in processpacket.ipv4s_for_mac:
@@ -415,6 +420,16 @@ def processpacket(p):
 			#p.show()
 			#sys.exit(96)
 
+		if sIP and sIP != '0.0.0.0':
+			if sIP not in processpacket.ports_for_ip:
+				processpacket.ports_for_ip[sIP] = set()
+			processpacket.ports_for_ip[sIP].add('tcp_' + str(t_layer.sport))
+
+		if dIP and dIP != '0.0.0.0':
+			if dIP not in processpacket.ports_for_ip:
+				processpacket.ports_for_ip[dIP] = set()
+			processpacket.ports_for_ip[dIP].add('tcp_' + str(t_layer.dport))
+
 		label = 'TCP_FLAGS_' + str(t_layer.flags)
 		inc_stats(label, p_len)
 
@@ -449,6 +464,17 @@ def processpacket(p):
 			#debug_out("No udp server port")
 			#p.show()
 			#sys.exit(95)
+
+		if sIP and sIP != '0.0.0.0':
+			if sIP not in processpacket.ports_for_ip:
+				processpacket.ports_for_ip[sIP] = set()
+			processpacket.ports_for_ip[sIP].add('udp_' + str(u_layer.sport))
+
+		if dIP and dIP != '0.0.0.0':
+			if dIP not in processpacket.ports_for_ip:
+				processpacket.ports_for_ip[dIP] = set()
+			processpacket.ports_for_ip[dIP].add('udp_' + str(u_layer.dport))
+
 	elif p.haslayer(ICMP):
 		i_layer = p.getlayer(ICMP)
 		label = 'icmp_' + str(i_layer.type) + '.' + str(i_layer.code)
@@ -484,7 +510,7 @@ def processpacket(p):
 		sys.exit(92)
 
 
-def hints_for(proto_desc, local_info, name_list):
+def hints_for(proto_desc, single_port, local_info, name_list):
 	"""For a given protocol, return the appropriate hint information to go in field 5 of the output."""
 
 	hint_return = ''
@@ -504,6 +530,10 @@ def hints_for(proto_desc, local_info, name_list):
 	else:
 		hint_return = ''
 
+	if hint_return and single_port:
+		hint_return += ' ' + single_port
+	elif single_port:
+		hint_return = single_port
 
 	if hint_return and local_info:
 		hint_return += ' ' + local_info
@@ -557,16 +587,41 @@ def print_stats(mincount_to_show, minsize_to_show, out_format, source_string):
 			orig_ip = desc.replace('ip4_', '').replace('ip6_', '')
 			full_ip = explode_ip(orig_ip, {}, {})
 			if full_ip in processpacket.hosts_for_ip and full_ip in persistent_hosts_for_ip:
-				orig_ip_names = str(processpacket.hosts_for_ip[full_ip].union(persistent_hosts_for_ip[full_ip]))
+				if display_uuid_hosts:
+					orig_ip_list = processpacket.hosts_for_ip[full_ip].union(persistent_hosts_for_ip[full_ip])
+				else:
+					orig_ip_list = [x for x in processpacket.hosts_for_ip[full_ip].union(persistent_hosts_for_ip[full_ip]) if not re.match(uuid_match, x)]
+				orig_ip_names = str(orig_ip_list)
 				if not processpacket.hosts_for_ip[full_ip].issubset(persistent_hosts_for_ip[full_ip]):
 					hostcache_updates_needed.append(full_ip)
 			elif full_ip in processpacket.hosts_for_ip:
-				orig_ip_names = str(processpacket.hosts_for_ip[full_ip])
+				if display_uuid_hosts:
+					orig_ip_list = processpacket.hosts_for_ip[full_ip]
+				else:
+					orig_ip_list = [x for x in processpacket.hosts_for_ip[full_ip] if not re.match(uuid_match, x)]
+				orig_ip_names = str(orig_ip_list)
 				hostcache_updates_needed.append(full_ip)
 			elif full_ip in persistent_hosts_for_ip:
-				orig_ip_names = str(persistent_hosts_for_ip[full_ip])
+				if display_uuid_hosts:
+					orig_ip_list = persistent_hosts_for_ip[full_ip]
+				else:
+					orig_ip_list = [x for x in persistent_hosts_for_ip[full_ip] if not re.match(uuid_match, x)]
+				orig_ip_names = str(orig_ip_list)
 			else:
 				orig_ip_names = ''
+
+			if desc.startswith(('ip4_', 'ip6_')) and orig_ip in processpacket.ports_for_ip:
+				if len(processpacket.ports_for_ip[orig_ip]) == 1:
+					for sole_port in processpacket.ports_for_ip[orig_ip]:
+						break								#Just retrieve the sole entry in the set
+					sole_port = 'sole port: ' + str(sole_port)				# pylint: disable=undefined-loop-variable
+				elif len(processpacket.ports_for_ip[orig_ip]) == 2 and 'udp_53' in processpacket.ports_for_ip[orig_ip] and 'tcp_53' in processpacket.ports_for_ip[orig_ip]:
+					sole_port = 'udp_53_and_tcp_53'
+				else:
+					sole_port = str(len(processpacket.ports_for_ip[orig_ip])) + ' ports'
+			else:
+				sole_port = ''
+
 			if inc_stats.p_stats[one_key][0] >= mincount_to_show and inc_stats.p_stats[one_key][1] >= minsize_to_show:
 				is_local = ''
 				if orig_ip in processpacket.local_ips:
@@ -580,9 +635,9 @@ def print_stats(mincount_to_show, minsize_to_show, out_format, source_string):
 
 				try:
 					if out_format == 'html':
-						print("<tr><td align=right>{0:}</td><td align=right>{1}</td><td>{2}</td><td>{3}</td><td>{4}</td></tr>".format(inc_stats.p_stats[one_key][0], inc_stats.p_stats[one_key][1], desc, processpacket.field_filter.get(one_key, ''), hints_for(desc, is_local, orig_ip_names)))
+						print("<tr><td align=right>{0:}</td><td align=right>{1}</td><td>{2}</td><td>{3}</td><td>{4}</td></tr>".format(inc_stats.p_stats[one_key][0], inc_stats.p_stats[one_key][1], desc, processpacket.field_filter.get(one_key, ''), hints_for(desc, sole_port, is_local, orig_ip_names)))
 					elif out_format == 'ascii':
-						print("{0:>10d} {1:>13d} {2:60s} {3:48s} {4:30s}".format(inc_stats.p_stats[one_key][0], inc_stats.p_stats[one_key][1], desc, processpacket.field_filter.get(one_key, ''), hints_for(desc, is_local, orig_ip_names)))
+						print("{0:>10d} {1:>13d} {2:60s} {3:48s} {4:30s}".format(inc_stats.p_stats[one_key][0], inc_stats.p_stats[one_key][1], desc, processpacket.field_filter.get(one_key, ''), hints_for(desc, sole_port, is_local, orig_ip_names)))
 				except BrokenPipeError:
 					sys.exit(0)
 		if out_format == 'html':
@@ -660,7 +715,7 @@ def process_packet_source(if_name, pcap_source, user_args):
 				sniff(store=0, offline=source_file, filter=user_args['bpf'], count=user_args['count'], prn=lambda x: processpacket(x))	# pylint: disable=unnecessary-lambda
 			else:
 				sniff(store=0, offline=source_file, filter=user_args['bpf'], prn=lambda x: processpacket(x))				# pylint: disable=unnecessary-lambda
-		except IOError:
+		except (FileNotFoundError, IOError):
 			sys.stderr.write("Unable to open file " + str(pcap_source) + ', exiting.\n')
 			raise
 
@@ -670,6 +725,10 @@ def process_packet_source(if_name, pcap_source, user_args):
 	if delete_temp and source_file != pcap_source and os.path.exists(source_file):
 		os.remove(source_file)
 
+
+
+display_uuid_hosts = False
+uuid_match = r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.local\.'
 
 hints = {'TCP_FLAGS_': 'Invalid/no_tcp_flags', 'TCP_FLAGS_SR': 'Invalid/syn_and_rst', 'TCP_FLAGS_FRA': 'Invalid/fin_and_rst', 'TCP_FLAGS_FSPEC': 'Invalid/fin_and_syn', 'TCP_FLAGS_FSPU': 'Invalid/fin_and_syn', 'TCP_FLAGS_FSRPAU': 'Invalid/fin_and_syn_and_rst', 'TCP_FLAGS_FSRPAUEN': 'Invalid/fin_and_syn_and_rst_christmas_tree',
          'icmp_0.0': 'echo_reply',
@@ -718,11 +777,12 @@ hints = {'TCP_FLAGS_': 'Invalid/no_tcp_flags', 'TCP_FLAGS_SR': 'Invalid/syn_and_
          'tcp_873': 'rsync',
          'tcp_989': 'ftps-data', 'tcp_990': 'ftps', 'tcp_993': 'imaps',
          'tcp_1194': 'openvpn',
+         'tcp_1389': 'iclpv-dm_or_alt_jndi_ldap',
          'tcp_1433': 'mssql', 'tcp_1434': 'mssql_monitor',
          'tcp_1723': 'pptp',
          'tcp_1935': 'rtmp', 'tcp_1984': 'bigbrother',
          'tcp_3128': 'squid_proxy', 'tcp_3306': 'mysql', 'tcp_3389': 'remote_desktop_protocol', 'tcp_3478': 'webrtc',
-         'tcp_5060': 'sip', 'tcp_5223': 'apple_push_notification', 'tcp_5228': 'google_talk', 'tcp_5601': 'kibana', 'tcp_5900': 'vnc/remote_framebuffer', 'tcp_5938': 'teamviewer',
+         'tcp_5001': 'drobo/nasd', 'tcp_5060': 'sip', 'tcp_5223': 'apple_push_notification', 'tcp_5228': 'google_talk', 'tcp_5601': 'kibana', 'tcp_5900': 'vnc/remote_framebuffer', 'tcp_5938': 'teamviewer',
          'tcp_6379': 'redis',
          'tcp_7680': 'windows/delivery_optimization',
          'tcp_8008': 'apple_ical', 'tcp_8080': 'http-alt', 'tcp_8333': 'bitcoin',
