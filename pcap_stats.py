@@ -5,7 +5,7 @@
 #Internet gave thousands of us a chance to learn and grow.
 
 
-__version__ = '0.0.43'
+__version__ = '0.0.45'
 
 __author__ = 'William Stearns'
 __copyright__ = 'Copyright 2021, William Stearns'
@@ -218,7 +218,8 @@ def processpacket(p):
 
 	if "ipv4s_for_mac" not in processpacket.__dict__:
 		processpacket.ipv4s_for_mac = {}
-	#FIXME - ipv6 too?
+	if "ipv6s_for_mac" not in processpacket.__dict__:
+		processpacket.ipv6s_for_mac = {}
 
 	if 'hosts_for_ip' not in processpacket.__dict__:		#Dictionary; keys are IP addresses, values are sets of hostnames
 		processpacket.hosts_for_ip = {}
@@ -226,6 +227,9 @@ def processpacket(p):
 
 	if 'ports_for_ip' not in processpacket.__dict__:		#Dictionary; keys are IP addresses, values are sets of ports used by this IP (specifically, the ports at the IP's end of the connection)
 		processpacket.ports_for_ip = {}
+
+	if 'cast_type' not in processpacket.__dict__:			#Dictionary; keys are IP addresses, values are one of 'broadcast', 'multicast', (or unicast, though we don't remember this as it's the default.)
+		processpacket.cast_type = {}
 
 	p_layers = packet_layers(p)
 
@@ -301,12 +305,16 @@ def processpacket(p):
 
 	inc_stats('count', p_len)
 
-	#FIXME - do ipv6 too
-	if sIP and sIP != '0.0.0.0' and ':' not in sIP and not sIP.startswith('169.254.') and p.haslayer(Ether):	#We remember all the IPv4 addresses associated with a particular mac to decide later whether a mac address is a router.
+	if sIP and sIP not in ('0.0.0.0', '::') and not sIP.startswith(('169.254.', 'fe80:')) and p.haslayer(Ether):	#We remember all the IPv4 and IPv6 addresses associated with a particular mac to decide later whether a mac address is a router.
 		sMAC = p.getlayer(Ether).src
-		if sMAC not in processpacket.ipv4s_for_mac:
-			processpacket.ipv4s_for_mac[sMAC] = set([])
-		processpacket.ipv4s_for_mac[sMAC].add(sIP)
+		if ':' in sIP:
+			if sMAC not in processpacket.ipv6s_for_mac:
+				processpacket.ipv6s_for_mac[sMAC] = set([])
+			processpacket.ipv6s_for_mac[sMAC].add(sIP)
+		else:
+			if sMAC not in processpacket.ipv4s_for_mac:
+				processpacket.ipv4s_for_mac[sMAC] = set([])
+			processpacket.ipv4s_for_mac[sMAC].add(sIP)
 
 	for a_layer in p_layers:
 		if a_layer not in ignore_layers:
@@ -317,10 +325,14 @@ def processpacket(p):
 			label = 'ethernet_broadcast'
 			inc_stats(label, p_len)
 			processpacket.field_filter[label] = 'ether broadcast'
+			if dIP and (p.haslayer(IPv6) or p.haslayer(IP)):
+				processpacket.cast_type[dIP] = 'broadcast'
 		elif p[Ether].dst.startswith(('01:00:5e:', '33:33:', '01:80:c2:')):
 			label = 'ethernet_multicast'
 			inc_stats(label, p_len)
 			processpacket.field_filter[label] = 'ether multicast'
+			if dIP and (p.haslayer(IPv6) or p.haslayer(IP)):
+				processpacket.cast_type[dIP] = 'multicast'
 		else:
 			label = 'ethernet_unicast'
 			inc_stats(label, p_len)
@@ -482,15 +494,29 @@ def processpacket(p):
 		processpacket.field_filter[label] = 'icmptype = ' + str(i_layer.type) + ' and icmpcode = ' + str(i_layer.code)
 		#p.show()
 		#sys.exit(94)
-	#Come back for this - it takes a lot of individual headers
-	#elif p.haslayer(ICMPv6):					#use icmp6type and icmp6code
-	#	i_layer = p.getlayer(ICMPv6)
-	#	p.show()
-	#	sys.exit(93)
-	#	label = 'icmp_' + str(i_layer.type) + '.' + str(i_layer.code)
-	#	if label not in inc_stats.p_stats:
-	#		inc_stats.p_stats[label] = [0, 0]
-	#	inc_stats.p_stats[label][0] += 1
+	#IPv6 doesn't have a dedicated ICMPv6 layer, so we need to key off the IPv6 next_header value of 58 for ICMPv6
+	elif p.haslayer(IPv6) and p.getlayer(IPv6).nh == 58:
+		i_layer = p.getlayer('IPv6').payload
+		label = 'icmp6_' + str(i_layer.type) + '.' + str(i_layer.code)
+		inc_stats(label, p_len)
+		#processpacket.field_filter[label] = 'icmptype = ' + str(i_layer.type) + ' and icmpcode = ' + str(i_layer.code)		#I don't believe this works on ipv6
+
+		#If we want to get down into the individual icmp types:
+		#debug_out(label)
+		#if i_layer.type == 1:					#'ICMPv6 Destination Unreachable'
+		#	debug_out('dest_unreach')
+		#elif i_layer.type == 3:					#'ICMPv6 Time Exceeded'
+		#	debug_out('time exceeded')
+		#elif i_layer.type == 134:				#'ICMPv6 Neighbor Discovery - Router Advertisement'
+		#	debug_out('router_adv')
+		#elif i_layer.type == 135:				#'ICMPv6 Neighbor Discovery - Neighbor Solicitation'
+		#	debug_out('neighbor_sol')
+		#elif i_layer.type == 136:				#'ICMPv6 Neighbor Discovery - Neighbor Advertisement'
+		#	debug_out('neighbor_adv')
+		#else:
+		#	p.show()
+		#	debug_out(p_layers)
+		#	sys.exit(93)
 	elif p.haslayer(ARP) or p.haslayer(LLC):
 		pass
 	elif proto:
@@ -510,7 +536,7 @@ def processpacket(p):
 		sys.exit(92)
 
 
-def hints_for(proto_desc, single_port, local_info, name_list):
+def hints_for(proto_desc, single_port, local_info, cast_info, name_list):
 	"""For a given protocol, return the appropriate hint information to go in field 5 of the output."""
 
 	hint_return = ''
@@ -540,9 +566,14 @@ def hints_for(proto_desc, single_port, local_info, name_list):
 	elif local_info:
 		hint_return = local_info
 
-	if hint_return and name_list:
+	if hint_return and cast_info:
+		hint_return += ' ' + cast_info
+	elif cast_info:
+		hint_return = cast_info
+
+	if hint_return and name_list and name_list != '[]':
 		hint_return += ' ' + name_list
-	elif name_list:
+	elif name_list and name_list != '[]':
 		hint_return = name_list
 
 
@@ -622,6 +653,11 @@ def print_stats(mincount_to_show, minsize_to_show, out_format, source_string):
 			else:
 				sole_port = ''
 
+			if desc.startswith(('ip4_', 'ip6_')) and orig_ip in processpacket.cast_type:
+				cast_string = processpacket.cast_type[orig_ip]
+			else:
+				cast_string = ''
+
 			if inc_stats.p_stats[one_key][0] >= mincount_to_show and inc_stats.p_stats[one_key][1] >= minsize_to_show:
 				is_local = ''
 				if orig_ip in processpacket.local_ips:
@@ -629,15 +665,20 @@ def print_stats(mincount_to_show, minsize_to_show, out_format, source_string):
 
 					for one_mac in processpacket.ipv4s_for_mac.keys():
 						if orig_ip in processpacket.ipv4s_for_mac[one_mac] and len(processpacket.ipv4s_for_mac[one_mac]) > 10:
-							is_local = 'local ipv4router ' + str(list(processpacket.ipv4s_for_mac[one_mac])[0:10]) + '..., ' + str(len(processpacket.ipv4s_for_mac[one_mac])) + ' entries.'
+							is_local += ' ipv4router ' + str(list(processpacket.ipv4s_for_mac[one_mac])[0:10]) + '..., ' + str(len(processpacket.ipv4s_for_mac[one_mac])) + ' entries.'
 						elif orig_ip in processpacket.ipv4s_for_mac[one_mac] and len(processpacket.ipv4s_for_mac[one_mac]) > 1:
-							is_local = 'local ipv4router ' + str(processpacket.ipv4s_for_mac[one_mac])
+							is_local += ' ipv4router ' + str(processpacket.ipv4s_for_mac[one_mac])
+					for one_mac in processpacket.ipv6s_for_mac.keys():
+						if orig_ip in processpacket.ipv6s_for_mac[one_mac] and len(processpacket.ipv6s_for_mac[one_mac]) > 10:
+							is_local += ' ipv6router ' + str(list(processpacket.ipv6s_for_mac[one_mac])[0:10]) + '..., ' + str(len(processpacket.ipv6s_for_mac[one_mac])) + ' entries.'
+						elif orig_ip in processpacket.ipv6s_for_mac[one_mac] and len(processpacket.ipv6s_for_mac[one_mac]) > 1:
+							is_local += ' ipv6router ' + str(processpacket.ipv6s_for_mac[one_mac])
 
 				try:
 					if out_format == 'html':
-						print("<tr><td align=right>{0:}</td><td align=right>{1}</td><td>{2}</td><td>{3}</td><td>{4}</td></tr>".format(inc_stats.p_stats[one_key][0], inc_stats.p_stats[one_key][1], desc, processpacket.field_filter.get(one_key, ''), hints_for(desc, sole_port, is_local, orig_ip_names)))
+						print("<tr><td align=right>{0:}</td><td align=right>{1}</td><td>{2}</td><td>{3}</td><td>{4}</td></tr>".format(inc_stats.p_stats[one_key][0], inc_stats.p_stats[one_key][1], desc, processpacket.field_filter.get(one_key, ''), hints_for(desc, sole_port, is_local, cast_string, orig_ip_names)))
 					elif out_format == 'ascii':
-						print("{0:>10d} {1:>13d} {2:60s} {3:48s} {4:30s}".format(inc_stats.p_stats[one_key][0], inc_stats.p_stats[one_key][1], desc, processpacket.field_filter.get(one_key, ''), hints_for(desc, sole_port, is_local, orig_ip_names)))
+						print("{0:>10d} {1:>13d} {2:60s} {3:48s} {4:30s}".format(inc_stats.p_stats[one_key][0], inc_stats.p_stats[one_key][1], desc, processpacket.field_filter.get(one_key, ''), hints_for(desc, sole_port, is_local, cast_string, orig_ip_names)))
 				except BrokenPipeError:
 					sys.exit(0)
 		if out_format == 'html':
@@ -739,6 +780,14 @@ hints = {'TCP_FLAGS_': 'Invalid/no_tcp_flags', 'TCP_FLAGS_SR': 'Invalid/syn_and_
          'icmp_11.0': 'time_exceeded/TTL', 'icmp_11.1': 'time_exceeded/frag_reassembly_time_exceeded',
          'icmp_13.0': 'timestamp',
          'icmp_14.0': 'timestamp_reply',
+         'icmp6_1.1': 'unreachable/communication_administratively_prohibited', 'icmp6_1.3': 'unreachable/address_unreachable', 'icmp6_1.4': 'unreachable/port_unreachable', 'icmp6_1.6': 'unreachable/reject_destination_route',
+         'icmp6_3.0': 'time_exceeded/hop_limit',
+         'icmp6_128.0': 'echo_request',
+         'icmp6_129.0': 'echo_reply',
+         'icmp6_133.0': 'router_solicitation/normal',
+         'icmp6_134.0': 'router_advertisement/normal',
+         'icmp6_135.0': 'neighbor_solicitation/normal',
+         'icmp6_136.0': 'neighbor_advertisement/normal',
          'ip4_0.0.0.0': 'address_unspecified', 'ip4_1.1.1.1': 'public_dns/cloudflare', 'ip4_127.0.0.1': 'localhost', 'ip4_8.8.4.4': 'public_dns/google', 'ip4_8.8.8.8': 'public_dns/google', 'ip4_75.75.75.75': 'public_dns/cdns01.comcast.net', 'ip4_75.75.76.76': 'public_dns/cdns02.comcast.net', 'ip4_75.75.77.22': 'public_dns/doh.xfinity.com', 'ip4_75.75.77.98': 'public_dns/doh.xfinity.com', 'ip4_224.0.0.1': 'all_systems_on_this_subnet', 'ip4_224.0.0.2': 'all_routers_on_this_subnet', 'ip4_224.0.0.13': 'all_pim_routers', 'ip4_224.0.0.22': 'multicast/IGMP', 'ip4_224.0.0.251': 'multicast/mDNS', 'ip4_224.0.0.252': 'multicast/LLMNR', 'ip4_224.0.1.40': 'multicast/cisco_rp_discovery', 'ip4_224.0.1.60': 'multicast/hp_device_discovery', 'ip4_239.255.255.250': 'multicast/uPNP_or_SSDP', 'ip4_255.255.255.255': 'broadcast',
          'ip6_2001:558:feed::1': 'public_dns/cdns01.comcast.net', 'ip6_2001:558:feed::2': 'public_dns/cdns02.comcast.net', 'ip6_2001:558:feed:443::98': 'public_dns/doh.xfinity.com',
          'ip6_::': 'address_unspecified', 'ip6_::1': 'localhost', 'ip6_ff02::1': 'multicast/all_nodes', 'ip6_ff02::2': 'multicast/all_routers', 'ip6_ff02::c': 'multicast/ssdp', 'ip6_ff02::16': 'multicast/MLDv2_capable_routers', 'ip6_ff02::fb': 'multicast/mDNSv6', 'ip6_ff02::1:2': 'multicast/DHCP_Relay_Agents_and_Servers', 'ip6_ff02::1:3': 'multicast/LLMNR',
