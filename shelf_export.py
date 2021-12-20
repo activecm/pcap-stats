@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
+"""Exports a shelf-created dictionary to stdout.  Tested with DBM files."""
 
-__version__ = '0.0.1'
+__version__ = '0.0.2'
 
 __author__ = 'William Stearns'
 __copyright__ = 'Copyright 2021, William Stearns'
@@ -44,34 +45,43 @@ def force_string(raw_string):
 
 
 
-ip_names_cache = os.environ["HOME"] + '/.cache/ip_names'
+default_shelf_file = os.environ["HOME"] + '/.cache/ip_names'
 
-try:
-	persistent_hosts_for_ip = shelve.open(ip_names_cache, flag='r')
-except:
-	sys.stderr.write('Unable to open ip_names cache for reading, exiting.\n')
-	sys.stderr.flush()
-	persistent_hosts_for_ip = {}
-	sys.exit(1)
 
-print('{')
-is_first = True
-for a_key in sorted(persistent_hosts_for_ip):
-	if a_key in persistent_hosts_for_ip:
-		key_string = force_string(a_key)
-		#if "'" in str(persistent_hosts_for_ip[a_key]):
-		#	sys.stderr.write('Quote error for ' + str(persistent_hosts_for_ip[a_key]) + '\n')
-		#	sys.stderr.flush()
-		#else:
-		if is_first:
-			is_first = False
-		else:
-			print(',')
-		#sys.stdout.write('\t"' + key_string + '": ' + str(persistent_hosts_for_ip[a_key]).replace("'", '"').replace('{', '[').replace('}', ']'))
-		sys.stdout.write('\t"' + key_string + '": ' + json.dumps(list(persistent_hosts_for_ip[a_key])))
-		sys.stdout.flush()
-	else:
-		sys.stderr.write('Key error for ' + force_string(a_key) + '\n')
+if __name__ == '__main__':
+	import argparse
+
+	parser = argparse.ArgumentParser(description='shelf_export version ' + str(__version__))
+	parser.add_argument('-r', '--read', help='Shelf file(s) from which to read dictionary', required=False, default=default_shelf_file)
+	(parsed, unparsed) = parser.parse_known_args()
+	cl_args = vars(parsed)
+
+	active_shelf = cl_args['read']
+	try:
+		persistent_dict = shelve.open(active_shelf, flag='r')
+	except:
+		sys.stderr.write('Unable to open ' + active_shelf + ' for reading, exiting.\n')
 		sys.stderr.flush()
+		sys.exit(1)
 
-print('\n}')
+	print('{')
+	is_first = True
+	for a_key in sorted(persistent_dict):
+		if a_key in persistent_dict:
+			key_string = force_string(a_key)
+			#if "'" in str(persistent_dict[a_key]):
+			#	sys.stderr.write('Quote error for ' + str(persistent_dict[a_key]) + '\n')
+			#	sys.stderr.flush()
+			#else:
+			if is_first:
+				is_first = False
+			else:
+				print(',')
+			#sys.stdout.write('\t"' + key_string + '": ' + str(persistent_dict[a_key]).replace("'", '"').replace('{', '[').replace('}', ']'))
+			sys.stdout.write('\t"' + key_string + '": ' + json.dumps(list(persistent_dict[a_key])))
+			sys.stdout.flush()
+		else:
+			sys.stderr.write('Key error for ' + force_string(a_key) + '\n')
+			sys.stderr.flush()
+
+	print('\n}')

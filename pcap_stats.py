@@ -5,7 +5,7 @@
 #Internet gave thousands of us a chance to learn and grow.
 
 
-__version__ = '0.0.46'
+__version__ = '0.0.49'
 
 __author__ = 'William Stearns'
 __copyright__ = 'Copyright 2021, William Stearns'
@@ -222,11 +222,11 @@ def processpacket(p):
 	if "ipv6s_for_mac" not in processpacket.__dict__:
 		processpacket.ipv6s_for_mac = {}
 
-	if 'hosts_for_ip' not in processpacket.__dict__:		#Dictionary; keys are IP addresses, values are sets of hostnames
-		processpacket.hosts_for_ip = {}
+	if 'dns_for_ip' not in processpacket.__dict__:			#Dictionary; keys are IP addresses, values are sets of hostnames
+		processpacket.dns_for_ip = {}
 
-	if 'netbiosnames_for_ip' not in processpacket.__dict__:		#Dictionary; keys are IP addresses, values are sets of netbios names
-		processpacket.netbiosnames_for_ip = {}
+	if 'netbios_for_ip' not in processpacket.__dict__:		#Dictionary; keys are IP addresses, values are sets of netbios names
+		processpacket.netbios_for_ip = {}
 
 	if 'ports_for_ip' not in processpacket.__dict__:		#Dictionary; keys are IP addresses, values are sets of ports used by this IP (specifically, the ports at the IP's end of the connection)
 		processpacket.ports_for_ip = {}
@@ -355,9 +355,9 @@ def processpacket(p):
 				if one_tuple[2] in ('A', 'AAAA', 'PTR', 'CNAME'):
 					if one_tuple[1] and one_tuple[3]:				#Check that the IP and hostname fields are not empty
 						ip_string = force_string(one_tuple[1])
-						if ip_string not in processpacket.hosts_for_ip:
-							processpacket.hosts_for_ip[ip_string] = set()
-						processpacket.hosts_for_ip[ip_string].add(force_string(one_tuple[3]))
+						if ip_string not in processpacket.dns_for_ip:
+							processpacket.dns_for_ip[ip_string] = set()
+						processpacket.dns_for_ip[ip_string].add(force_string(one_tuple[3]))
 				#else:
 				#	print(str(one_tuple))
 			elif one_tuple[0] in ('US', 'UC', 'TS', 'IP'):
@@ -494,16 +494,16 @@ def processpacket(p):
 		if u_layer.sport == 137 and p.haslayer(NBNSQueryResponse):
 			netbios_hostname = p[NBNSQueryResponse].RR_NAME.rstrip().rstrip(nullbyte).decode('UTF-8')
 			netbios_address = p[NBNSQueryResponse].NB_ADDRESS.rstrip()						#Apparently .decode('UTF-8') is not needed for a string
-			if netbios_address not in processpacket.netbiosnames_for_ip:
-				processpacket.netbiosnames_for_ip[netbios_address] = set()
-			processpacket.netbiosnames_for_ip[netbios_address].add(netbios_hostname)
+			if netbios_address not in processpacket.netbios_for_ip:
+				processpacket.netbios_for_ip[netbios_address] = set()
+			processpacket.netbios_for_ip[netbios_address].add(netbios_hostname)
 			#debug_out(netbios_address + "/137/" + netbios_hostname)
 
 		if u_layer.sport == 138 and p.haslayer(NBTDatagram):
 			netbios_hostname = p[NBTDatagram].SourceName.rstrip().decode('UTF-8')
-			if sIP not in processpacket.netbiosnames_for_ip:
-				processpacket.netbiosnames_for_ip[sIP] = set()
-			processpacket.netbiosnames_for_ip[sIP].add(netbios_hostname)
+			if sIP not in processpacket.netbios_for_ip:
+				processpacket.netbios_for_ip[sIP] = set()
+			processpacket.netbios_for_ip[sIP].add(netbios_hostname)
 			#debug_out(sIP + "/138/" + netbios_hostname)
 
 	elif p.haslayer(ICMP):
@@ -555,7 +555,7 @@ def processpacket(p):
 		sys.exit(92)
 
 
-def hints_for(proto_desc, single_port, local_info, cast_info, netbios_names, name_list):
+def hints_for(proto_desc, list_of_hints):
 	"""For a given protocol, return the appropriate hint information to go in field 5 of the output."""
 
 	hint_return = ''
@@ -572,34 +572,12 @@ def hints_for(proto_desc, single_port, local_info, cast_info, netbios_names, nam
 		hint_return = 'apple'
 	elif proto_desc.startswith(('ip4_73.')):
 		hint_return = 'comcast'
-	else:
-		hint_return = ''
 
-	if hint_return and single_port:
-		hint_return += ' ' + single_port
-	elif single_port:
-		hint_return = single_port
-
-	if hint_return and local_info:
-		hint_return += ' ' + local_info
-	elif local_info:
-		hint_return = local_info
-
-	if hint_return and cast_info:
-		hint_return += ' ' + cast_info
-	elif cast_info:
-		hint_return = cast_info
-
-	if hint_return and netbios_names:
-		hint_return += ' ' + netbios_names
-	elif netbios_names:
-		hint_return = netbios_names
-
-	if hint_return and name_list and name_list != 'DNS:[]':		#DNS:[] test doesn't appear to work
-		hint_return += ' ' + name_list
-	elif name_list and name_list != 'DNS:[]':
-		hint_return = name_list
-
+	for one_hint in list_of_hints:
+		if hint_return and one_hint:
+			hint_return += ' ' + one_hint
+		elif one_hint:
+			hint_return = one_hint
 
 	return hint_return
 
@@ -609,14 +587,23 @@ def print_stats(mincount_to_show, minsize_to_show, out_format, source_string):
 
 	if "p_stats" in inc_stats.__dict__:
 
-		hostcache_state = ''
-		hostcache_updates_needed = []
+		dns_cache_state = ''
+		dns_cache_updates_needed = []
 		try:
-			persistent_hosts_for_ip = shelve.open(ip_names_cache, flag='r')
-			hostcache_state = 'readonly'
+			persistent_dns_for_ip = shelve.open(ip_names_cache, flag='r')
+			dns_cache_state = 'readonly'
 		except:
 			debug_out('Unable to open ip_names cache for reading')
-			persistent_hosts_for_ip = {}
+			persistent_dns_for_ip = {}
+
+		netbios_cache_state = ''
+		netbios_cache_updates_needed = []
+		try:
+			persistent_netbios_for_ip = shelve.open(netbios_names_cache, flag='r')
+			netbios_cache_state = 'readonly'
+		except:
+			debug_out('Unable to open ip_names cache for reading')
+			persistent_netbios_for_ip = {}
 
 		if out_format == 'html':
 			print('<html>')
@@ -638,83 +625,79 @@ def print_stats(mincount_to_show, minsize_to_show, out_format, source_string):
 			print("Elapsed_time: " + str(processpacket.maxstamp - processpacket.minstamp))
 
 		for one_key in sorted(inc_stats.p_stats.keys()):
+			hints_list = []
 			desc = one_key.replace(' ', '_')
 			orig_ip = desc.replace('ip4_', '').replace('ip6_', '')
 			full_ip = explode_ip(orig_ip, {}, {})
-			if full_ip in processpacket.hosts_for_ip and full_ip in persistent_hosts_for_ip:
-				if display_uuid_hosts:
-					orig_ip_list = processpacket.hosts_for_ip[full_ip].union(persistent_hosts_for_ip[full_ip])
-				else:
-					orig_ip_list = [x for x in processpacket.hosts_for_ip[full_ip].union(persistent_hosts_for_ip[full_ip]) if not re.match(uuid_match, x)]
-				orig_ip_names = 'DNS:' + str(orig_ip_list)
-				if not processpacket.hosts_for_ip[full_ip].issubset(persistent_hosts_for_ip[full_ip]):
-					hostcache_updates_needed.append(full_ip)
-			elif full_ip in processpacket.hosts_for_ip:
-				if display_uuid_hosts:
-					orig_ip_list = processpacket.hosts_for_ip[full_ip]
-				else:
-					orig_ip_list = [x for x in processpacket.hosts_for_ip[full_ip] if not re.match(uuid_match, x)]
-				orig_ip_names = 'DNS:' + str(orig_ip_list)
-				hostcache_updates_needed.append(full_ip)
-			elif full_ip in persistent_hosts_for_ip:
-				if display_uuid_hosts:
-					orig_ip_list = persistent_hosts_for_ip[full_ip]
-				else:
-					orig_ip_list = [x for x in persistent_hosts_for_ip[full_ip] if not re.match(uuid_match, x)]
-				orig_ip_names = 'DNS:' + str(orig_ip_list)
-			else:
-				orig_ip_names = ''
-
-			if full_ip in processpacket.netbiosnames_for_ip:
-				orig_netbios_names = 'NB:' + str(processpacket.netbiosnames_for_ip[full_ip])
-				if ':' in full_ip:
-					debug_out('use FULL for netbios')
-			elif orig_ip in processpacket.netbiosnames_for_ip:
-				orig_netbios_names = 'NB:' + str(processpacket.netbiosnames_for_ip[orig_ip])
-				if ':' in full_ip:
-					debug_out('use ORIG for netbios')
-			else:
-				orig_netbios_names = ''
-				#FIXME Set up a netbios cache too?
 
 			if desc.startswith(('ip4_', 'ip6_')) and orig_ip in processpacket.ports_for_ip:
 				if len(processpacket.ports_for_ip[orig_ip]) == 1:
 					for sole_port in processpacket.ports_for_ip[orig_ip]:
-						break								#Just retrieve the sole entry in the set
-					sole_port = 'sole_port:' + str(sole_port)				# pylint: disable=undefined-loop-variable
+						break											#Just retrieve the sole entry in the set
+					hints_list.append('sole_port:' + str(sole_port))						# pylint: disable=undefined-loop-variable
 				elif len(processpacket.ports_for_ip[orig_ip]) == 2 and 'udp_53' in processpacket.ports_for_ip[orig_ip] and 'tcp_53' in processpacket.ports_for_ip[orig_ip]:
-					sole_port = 'sole_port:udp_53_and_tcp_53'
+					hints_list.append('sole_port:udp_53_and_tcp_53')
 				else:
-					sole_port = str(len(processpacket.ports_for_ip[orig_ip])) + ' ports'
-			else:
-				sole_port = ''
+					hints_list.append(str(len(processpacket.ports_for_ip[orig_ip])) + ' ports')
 
 			if desc.startswith(('ip4_', 'ip6_')) and orig_ip in processpacket.cast_type:
-				cast_string = 'cast:' + processpacket.cast_type[orig_ip]
-			else:
-				cast_string = ''
+				hints_list.append('cast:' + processpacket.cast_type[orig_ip])
+
+			if full_ip in processpacket.netbios_for_ip and full_ip in persistent_netbios_for_ip:				#Netbios name resolution isn't supported for ipv6, so it doesn't matter if we use full_ip or orig_ip.
+				hints_list.append('NB:' + str(processpacket.netbios_for_ip[full_ip].union(persistent_netbios_for_ip[full_ip])))
+				if not processpacket.netbios_for_ip[full_ip].issubset(persistent_netbios_for_ip[full_ip]):
+					netbios_cache_updates_needed.append(full_ip)
+			elif full_ip in processpacket.netbios_for_ip:
+				hints_list.append('NB:' + str(processpacket.netbios_for_ip[full_ip]))
+				netbios_cache_updates_needed.append(full_ip)
+			elif full_ip in persistent_netbios_for_ip:
+				hints_list.append('NB:' + str(persistent_netbios_for_ip[full_ip]))
+
+			if full_ip in processpacket.dns_for_ip and full_ip in persistent_dns_for_ip:
+				if display_uuid_hosts:
+					orig_ip_list = processpacket.dns_for_ip[full_ip].union(persistent_dns_for_ip[full_ip])
+				else:
+					orig_ip_list = [x for x in processpacket.dns_for_ip[full_ip].union(persistent_dns_for_ip[full_ip]) if not re.match(uuid_match, x)]
+				if orig_ip_list:
+					hints_list.append('DNS:' + str(orig_ip_list))
+				if not processpacket.dns_for_ip[full_ip].issubset(persistent_dns_for_ip[full_ip]):
+					dns_cache_updates_needed.append(full_ip)
+			elif full_ip in processpacket.dns_for_ip:
+				if display_uuid_hosts:
+					orig_ip_list = processpacket.dns_for_ip[full_ip]
+				else:
+					orig_ip_list = [x for x in processpacket.dns_for_ip[full_ip] if not re.match(uuid_match, x)]
+				if orig_ip_list:
+					hints_list.append('DNS:' + str(orig_ip_list))
+				dns_cache_updates_needed.append(full_ip)
+			elif full_ip in persistent_dns_for_ip:
+				if display_uuid_hosts:
+					orig_ip_list = persistent_dns_for_ip[full_ip]
+				else:
+					orig_ip_list = [x for x in persistent_dns_for_ip[full_ip] if not re.match(uuid_match, x)]
+				if orig_ip_list:
+					hints_list.append('DNS:' + str(orig_ip_list))
 
 			if inc_stats.p_stats[one_key][0] >= mincount_to_show and inc_stats.p_stats[one_key][1] >= minsize_to_show:
-				is_local = ''
 				if orig_ip in processpacket.local_ips:
-					is_local = 'local'
+					hints_list.insert(0, 'local')
 
 					for one_mac in processpacket.ipv4s_for_mac.keys():
 						if orig_ip in processpacket.ipv4s_for_mac[one_mac] and len(processpacket.ipv4s_for_mac[one_mac]) > 10:
-							is_local += ' ipv4router:' + str(list(processpacket.ipv4s_for_mac[one_mac])[0:10]) + '..., ' + str(len(processpacket.ipv4s_for_mac[one_mac])) + ' entries.'
+							hints_list.insert(1, 'ipv4router:' + str(list(processpacket.ipv4s_for_mac[one_mac])[0:10]) + '..., ' + str(len(processpacket.ipv4s_for_mac[one_mac])) + ' entries.')
 						elif orig_ip in processpacket.ipv4s_for_mac[one_mac] and len(processpacket.ipv4s_for_mac[one_mac]) > 1:
-							is_local += ' ipv4router:' + str(processpacket.ipv4s_for_mac[one_mac])
+							hints_list.insert(1, 'ipv4router:' + str(processpacket.ipv4s_for_mac[one_mac]))
 					for one_mac in processpacket.ipv6s_for_mac.keys():
 						if orig_ip in processpacket.ipv6s_for_mac[one_mac] and len(processpacket.ipv6s_for_mac[one_mac]) > 10:
-							is_local += ' ipv6router:' + str(list(processpacket.ipv6s_for_mac[one_mac])[0:10]) + '..., ' + str(len(processpacket.ipv6s_for_mac[one_mac])) + ' entries.'
+							hints_list.insert(1, 'ipv6router:' + str(list(processpacket.ipv6s_for_mac[one_mac])[0:10]) + '..., ' + str(len(processpacket.ipv6s_for_mac[one_mac])) + ' entries.')
 						elif orig_ip in processpacket.ipv6s_for_mac[one_mac] and len(processpacket.ipv6s_for_mac[one_mac]) > 1:
-							is_local += ' ipv6router:' + str(processpacket.ipv6s_for_mac[one_mac])
+							hints_list.insert(1, 'ipv6router:' + str(processpacket.ipv6s_for_mac[one_mac]))
 
 				try:
 					if out_format == 'html':
-						print("<tr><td align=right>{0:}</td><td align=right>{1}</td><td>{2}</td><td>{3}</td><td>{4}</td></tr>".format(inc_stats.p_stats[one_key][0], inc_stats.p_stats[one_key][1], desc, processpacket.field_filter.get(one_key, ''), hints_for(desc, sole_port, is_local, cast_string, orig_netbios_names, orig_ip_names)))
+						print("<tr><td align=right>{0:}</td><td align=right>{1}</td><td>{2}</td><td>{3}</td><td>{4}</td></tr>".format(inc_stats.p_stats[one_key][0], inc_stats.p_stats[one_key][1], desc, processpacket.field_filter.get(one_key, ''), hints_for(desc, hints_list)))
 					elif out_format == 'ascii':
-						print("{0:>10d} {1:>13d} {2:60s} {3:48s} {4:30s}".format(inc_stats.p_stats[one_key][0], inc_stats.p_stats[one_key][1], desc, processpacket.field_filter.get(one_key, ''), hints_for(desc, sole_port, is_local, cast_string, orig_netbios_names, orig_ip_names)))
+						print("{0:>10d} {1:>13d} {2:60s} {3:48s} {4:30s}".format(inc_stats.p_stats[one_key][0], inc_stats.p_stats[one_key][1], desc, processpacket.field_filter.get(one_key, ''), hints_for(desc, hints_list)))
 				except BrokenPipeError:
 					sys.exit(0)
 		if out_format == 'html':
@@ -722,25 +705,46 @@ def print_stats(mincount_to_show, minsize_to_show, out_format, source_string):
 			print('</body></html>')
 
 
-		if hostcache_state:
-			persistent_hosts_for_ip.close()
+		if dns_cache_state:
+			persistent_dns_for_ip.close()
 
-		if hostcache_updates_needed:
+		if netbios_cache_state:
+			persistent_netbios_for_ip.close()
+
+		if dns_cache_updates_needed:
 			try:
-				persistent_hosts_for_ip = shelve.open(ip_names_cache, writeback=True)
-				hostcache_state = 'readwrite'
+				persistent_dns_for_ip = shelve.open(ip_names_cache, writeback=True)
+				dns_cache_state = 'readwrite'
 
-				for full_ip in hostcache_updates_needed:
-					if full_ip in persistent_hosts_for_ip:
-						new_hostlist = processpacket.hosts_for_ip[full_ip].union(persistent_hosts_for_ip[full_ip])
+				for full_ip in dns_cache_updates_needed:
+					if full_ip in persistent_dns_for_ip:
+						new_hostlist = processpacket.dns_for_ip[full_ip].union(persistent_dns_for_ip[full_ip])
 					else:
-						new_hostlist = processpacket.hosts_for_ip[full_ip]
+						new_hostlist = processpacket.dns_for_ip[full_ip]
 					debug_out(str(full_ip) + ': ' + str(new_hostlist))
-					persistent_hosts_for_ip[full_ip] = new_hostlist
+					persistent_dns_for_ip[full_ip] = new_hostlist
 
-				persistent_hosts_for_ip.close()
+				persistent_dns_for_ip.close()
 			except:
 				debug_out('Unable to open ip_names cache for writing')
+
+		if netbios_cache_updates_needed:
+			try:
+				persistent_netbios_for_ip = shelve.open(netbios_names_cache, writeback=True)
+				netbios_cache_state = 'readwrite'
+
+				for full_ip in netbios_cache_updates_needed:
+					if full_ip in persistent_netbios_for_ip:
+						new_hostlist = processpacket.netbios_for_ip[full_ip].union(persistent_netbios_for_ip[full_ip])
+					else:
+						new_hostlist = processpacket.netbios_for_ip[full_ip]
+					debug_out(str(full_ip) + ': ' + str(new_hostlist))
+					persistent_netbios_for_ip[full_ip] = new_hostlist
+
+				persistent_netbios_for_ip.close()
+			except:
+				debug_out('Unable to open ip_names cache for writing')
+
 	else:
 		sys.stderr.write('It does not appear any packets were read.  Exiting.\n')
 		sys.stderr.flush()
@@ -893,6 +897,7 @@ ignore_layers = ('DHCP options',
 #udp_ignore_ports = (10400, 10401, 16403, 38010)
 
 ip_names_cache = os.environ["HOME"] + '/.cache/ip_names'
+netbios_names_cache = os.environ["HOME"] + '/.cache/netbios_names'
 
 if __name__ == '__main__':
 	import argparse
