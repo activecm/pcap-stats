@@ -5,7 +5,7 @@
 #Internet gave thousands of us a chance to learn and grow.
 
 
-__version__ = '0.0.49'
+__version__ = '0.0.54'
 
 __author__ = 'William Stearns'
 __copyright__ = 'Copyright 2021, William Stearns'
@@ -29,10 +29,17 @@ import binascii
 
 try:
 	#from scapy.all import *
-	from scapy.all import ARP, DNS, Ether, ICMP, IP, IPv6, LLC, NBNSQueryResponse, NBTDatagram, Scapy_Exception, STP, TCP, UDP, sniff				# pylint: disable=no-name-in-module
+	from scapy.all import ARP, DNS, Dot3, Ether, GRE, ICMP, IP, IPv6, LLC, Loopback, NBNSQueryResponse, NBTDatagram, Scapy_Exception, STP, TCP, UDP, sniff				# pylint: disable=no-name-in-module
 	from scapy.config import conf
 except ImportError:
 	sys.stderr.write('Unable to load the scapy library.  Perhaps run   sudo apt install python3-pip || sudo yum install python3-pip ; sudo pip3 install scapy   ?\n')
+	sys.stderr.flush()
+	sys.exit(1)
+
+try:
+	from scapy.contrib import erspan								# pylint: disable=unused-import
+except ImportError:
+	sys.stderr.write('Unable to load the erspan module from the scapy library contrib section.  Perhaps run   sudo apt install python3-pip || sudo yum install python3-pip ; sudo pip3 install scapy   ?\n')
 	sys.stderr.flush()
 	sys.exit(1)
 
@@ -180,6 +187,7 @@ def processpacket(p):
 		'DHCP6 IA Address Option (IA TA or IA NA suboption)': 'udp port 546 or udp port 547', 'DHCP6 Preference Option': 'udp port 546 or udp port 547', 'DHCP6 Server Identifier Option': 'udp port 546 or udp port 547', 'DHCP6 Status Code Option': 'udp port 546 or udp port 547', 'DHCPv6 Confirm Message': 'udp port 546 or udp port 547', 'DHCPv6 Reply Message': 'udp port 546 or udp port 547',
 		'DNS': 'port 53 or udp port 5353 or udp port 5355', 'ESP': 'ip proto esp',
 		'ICMPv6 Neighbor Discovery - Neighbor Advertisement': 'icmp6[0] == 136', 'ICMPv6 Neighbor Discovery - Neighbor Solicitation': 'icmp6[0] == 135', 'ICMPv6 Neighbor Discovery - Router Solicitation': 'icmp6[0] == 133', 'IP': 'ip', 'ICMP': 'icmp', 'IPv6': 'ip6', 'ISAKMP': 'port 500 or udp port 4500',
+		'Loopback': '-i lo',
 		'NTPHeader': 'udp port 123', 'RIP_entry': 'udp port 520', 'RIP_header': 'udp port 520', 'SNMP': 'port 161 or port 162', 'TCP': 'tcp', 'TFTP_Read_Request': 'port 69', 'TFTP_opcode': 'port 69', 'UDP': 'udp', '802.1Q': 'vlan',
 		'TCP_FLAGS_': 'tcp[12:2] & 0x01ff = 0x0000', 'TCP_FLAGS_F': 'tcp[12:2] & 0x01ff = 0x0001', 'TCP_FLAGS_S': 'tcp[12:2] & 0x01ff = 0x0002', 'TCP_FLAGS_R': 'tcp[12:2] & 0x01ff = 0x0004', 'TCP_FLAGS_SR': 'tcp[12:2] & 0x01ff = 0x0006', 'TCP_FLAGS_RP': 'tcp[12:2] & 0x01ff = 0x000C',
 		'TCP_FLAGS_A': 'tcp[12:2] & 0x01ff = 0x0010', 'TCP_FLAGS_FA': 'tcp[12:2] & 0x01ff = 0x0011', 'TCP_FLAGS_SA': 'tcp[12:2] & 0x01ff = 0x0012', 'TCP_FLAGS_RA': 'tcp[12:2] & 0x01ff = 0x0014', 'TCP_FLAGS_FRA': 'tcp[12:2] & 0x01ff = 0x0015', 'TCP_FLAGS_PA': 'tcp[12:2] & 0x01ff = 0x0018', 'TCP_FLAGS_FPA': 'tcp[12:2] & 0x01ff = 0x0019', 'TCP_FLAGS_RPA': 'tcp[12:2] & 0x01ff = 0x001C',
@@ -204,7 +212,7 @@ def processpacket(p):
 		#F	FIN		  0x01
 
 	if "tcp_server_ports" not in processpacket.__dict__:
-		processpacket.tcp_server_ports = [7, 13, 21, 22, 23, 25, 53, 79, 80, 88, 110, 111, 113, 135, 139, 143, 389, 443, 445, 514, 631, 902, 990, 993, 995, 1433, 1521, 1723, 2222, 3128, 3306, 3389, 5000, 5001, 5060, 5223, 5228, 5432, 5601, 5900, 7070, 7680, 8008, 8009, 8080, 8088, 8333, 8443, 9200, 9443, 49152]
+		processpacket.tcp_server_ports = [7, 13, 21, 22, 23, 25, 53, 79, 80, 88, 102, 110, 111, 113, 135, 139, 143, 389, 443, 445, 465, 514, 631, 902, 990, 993, 995, 1001, 1119, 1433, 1521, 1723, 2222, 2598, 3128, 3306, 3389, 3724, 5000, 5001, 5060, 5223, 5228, 5432, 5601, 5900, 7070, 7680, 8008, 8009, 8080, 8088, 8333, 8443, 9200, 9443, 13000, 49152]
 
 	if "udp_server_ports" not in processpacket.__dict__:
 		processpacket.udp_server_ports = [7, 53, 67, 123, 137, 138, 192, 443, 1900, 2190, 5002, 5353, 5355, 8200, 16384, 16385, 16386, 17500, 19305, 56833, 60682, 62988]
@@ -295,8 +303,9 @@ def processpacket(p):
 		sIP = None
 		dIP = None
 	else:
-		print("Ethernet type")
-		print(p[Ether].type)
+		if p.haslayer(Ether):
+			print("Ethernet type")
+			print(p[Ether].type)
 		p.show()
 		sys.exit(99)
 		i_layer = None
@@ -340,7 +349,11 @@ def processpacket(p):
 			label = 'ethernet_unicast'
 			inc_stats(label, p_len)
 			processpacket.field_filter[label] = 'not (ether broadcast) and not (ether multicast)'
+	elif p.haslayer(Loopback) or p.haslayer(Dot3):
+		pass
 	else:
+		#p.show()
+		#sys.exit(34)
 		label = 'non_ethernet'
 		inc_stats(label, p_len)
 		#processpacket.field_filter[label] = '...'	#unsure
@@ -364,6 +377,19 @@ def processpacket(p):
 				pass
 			else:
 				debug_out(str(one_tuple))
+
+	#Now that we've added any dns entries, let's see if the source or dest IPs could be converted to hostnames so we have hostname entries too.
+	if sIP and sIP in processpacket.dns_for_ip:
+		for one_name in processpacket.dns_for_ip[sIP]:
+			label = 'name_' + one_name
+			inc_stats(label, p_len)
+			processpacket.field_filter[label] = 'host ' + one_name
+
+	if dIP and dIP in processpacket.dns_for_ip:
+		for one_name in processpacket.dns_for_ip[dIP]:
+			label = 'name_' + one_name
+			inc_stats(label, p_len)
+			processpacket.field_filter[label] = 'host ' + one_name
 
 	if sIP != '::':
 		if ttl == 255:										#The system is sending a broadcast - it must be local
@@ -406,7 +432,6 @@ def processpacket(p):
 	#print(time.asctime(p_gmt))			#Tue Jul 20 21:41:03 2021
 
 
-
 	if p.haslayer(TCP):
 		t_layer = p.getlayer(TCP)
 		#p.show()
@@ -431,7 +456,7 @@ def processpacket(p):
 		#elif t_layer.sport in tcp_ignore_ports and t_layer.dport in tcp_ignore_ports:		#Was used for early troubleshooting, no longer needed.
 		#	pass
 		else:
-			debug_out("No tcp server port: " + str(t_layer.sport) + " " + str(t_layer.dport))
+			debug_out("No tcp server port: " + str(t_layer.sport) + " " + str(t_layer.dport))	#FIXME - only write this once.
 			#p.show()
 			#sys.exit(96)
 
@@ -538,11 +563,27 @@ def processpacket(p):
 		#	sys.exit(93)
 	elif p.haslayer(ARP) or p.haslayer(LLC):
 		pass
+	elif p.haslayer(IP) and p[IP].proto == 47 and p.haslayer(GRE):
+		#FIXME - we're not parsing the _inner_ IP layer - see passer.py IPv4/UDPv4/ipencap for approach.
+		label = 'proto_' + str(proto) + "_" + str(p[GRE].proto)
+		inc_stats(label, p_len)
+		processpacket.field_filter[label] = 'ip proto ' + str(proto)
+		if p[GRE].proto == 2048:		#0x800==2048==IPv4
+			if p[GRE].payload:
+				encap_packet = p[GRE].payload
+				processpacket(encap_packet)
+				#p.show()
+				#sys.exit(31)
+		elif p[GRE].proto == 35006:		#0x88be==35006==ERSPAN_type_II
+			#https://datatracker.ietf.org/doc/html/draft-foschiano-erspan-00
+			pass
+		elif p[GRE].proto == 8939:		#0x22eb==8939==ERSPAN_type_III
+			#https://datatracker.ietf.org/doc/html/draft-foschiano-erspan-00
+			pass
 	elif proto:
 		label = 'proto_' + str(proto)
 		inc_stats(label, p_len)
 		processpacket.field_filter[label] = 'ip proto ' + str(proto)
-
 	elif p.haslayer(IPv6):						#use "ip6 proto"
 		pass							#FIXME
 	elif p_layers == ['Ethernet', 'Raw']:
@@ -643,6 +684,7 @@ def print_stats(mincount_to_show, minsize_to_show, out_format, source_string):
 			if desc.startswith(('ip4_', 'ip6_')) and orig_ip in processpacket.cast_type:
 				hints_list.append('cast:' + processpacket.cast_type[orig_ip])
 
+			#FIXME - break into NB: (queried) and nb: (historic)
 			if full_ip in processpacket.netbios_for_ip and full_ip in persistent_netbios_for_ip:				#Netbios name resolution isn't supported for ipv6, so it doesn't matter if we use full_ip or orig_ip.
 				hints_list.append('NB:' + str(processpacket.netbios_for_ip[full_ip].union(persistent_netbios_for_ip[full_ip])))
 				if not processpacket.netbios_for_ip[full_ip].issubset(persistent_netbios_for_ip[full_ip]):
@@ -653,16 +695,18 @@ def print_stats(mincount_to_show, minsize_to_show, out_format, source_string):
 			elif full_ip in persistent_netbios_for_ip:
 				hints_list.append('NB:' + str(persistent_netbios_for_ip[full_ip]))
 
-			if full_ip in processpacket.dns_for_ip and full_ip in persistent_dns_for_ip:
-				if display_uuid_hosts:
-					orig_ip_list = processpacket.dns_for_ip[full_ip].union(persistent_dns_for_ip[full_ip])
-				else:
-					orig_ip_list = [x for x in processpacket.dns_for_ip[full_ip].union(persistent_dns_for_ip[full_ip]) if not re.match(uuid_match, x)]
-				if orig_ip_list:
-					hints_list.append('DNS:' + str(orig_ip_list))
-				if not processpacket.dns_for_ip[full_ip].issubset(persistent_dns_for_ip[full_ip]):
-					dns_cache_updates_needed.append(full_ip)
-			elif full_ip in processpacket.dns_for_ip:
+			#FIXME - break into DNS: (queried) and dns: (historic) by dropping next block entirely...
+			#if full_ip in processpacket.dns_for_ip and full_ip in persistent_dns_for_ip:
+			#	if display_uuid_hosts:
+			#		orig_ip_list = processpacket.dns_for_ip[full_ip].union(persistent_dns_for_ip[full_ip])
+			#	else:
+			#		orig_ip_list = [x for x in processpacket.dns_for_ip[full_ip].union(persistent_dns_for_ip[full_ip]) if not re.match(uuid_match, x)]
+			#	if orig_ip_list:
+			#		hints_list.append('DNS:' + str(orig_ip_list))
+			#	if not processpacket.dns_for_ip[full_ip].issubset(persistent_dns_for_ip[full_ip]):
+			#		dns_cache_updates_needed.append(full_ip)
+			if full_ip in processpacket.dns_for_ip:
+				#Display hostnames we looked up in this session.
 				if display_uuid_hosts:
 					orig_ip_list = processpacket.dns_for_ip[full_ip]
 				else:
@@ -670,13 +714,21 @@ def print_stats(mincount_to_show, minsize_to_show, out_format, source_string):
 				if orig_ip_list:
 					hints_list.append('DNS:' + str(orig_ip_list))
 				dns_cache_updates_needed.append(full_ip)
-			elif full_ip in persistent_dns_for_ip:
+				recent_lookup_set = set(orig_ip_list)
+			else:
+				recent_lookup_set = set()
+
+			if full_ip in persistent_dns_for_ip:
+				#Display any hostnames that have been cached but not looked up in this session.
 				if display_uuid_hosts:
 					orig_ip_list = persistent_dns_for_ip[full_ip]
 				else:
 					orig_ip_list = [x for x in persistent_dns_for_ip[full_ip] if not re.match(uuid_match, x)]
 				if orig_ip_list:
-					hints_list.append('DNS:' + str(orig_ip_list))
+					#Remove dns_for_ip entries from this so we show just not-recently-looked-up hostnames after "dns:"
+					just_old_hostnames = set(orig_ip_list) - recent_lookup_set
+					if just_old_hostnames:
+						hints_list.append('dns:' + str(list(just_old_hostnames)))
 
 			if inc_stats.p_stats[one_key][0] >= mincount_to_show and inc_stats.p_stats[one_key][1] >= minsize_to_show:
 				if orig_ip in processpacket.local_ips:
@@ -719,10 +771,15 @@ def print_stats(mincount_to_show, minsize_to_show, out_format, source_string):
 				for full_ip in dns_cache_updates_needed:
 					if full_ip in persistent_dns_for_ip:
 						new_hostlist = processpacket.dns_for_ip[full_ip].union(persistent_dns_for_ip[full_ip])
+						if len(new_hostlist.symmetric_difference(persistent_dns_for_ip[full_ip])) > 0:
+							#The old and new set are different - write out the new hostlist.
+							debug_out(str(full_ip) + ': ' + str(new_hostlist))
+							persistent_dns_for_ip[full_ip] = new_hostlist
 					else:
+						#There was no old hostlist, so write the new one out unconditionally.
 						new_hostlist = processpacket.dns_for_ip[full_ip]
-					debug_out(str(full_ip) + ': ' + str(new_hostlist))
-					persistent_dns_for_ip[full_ip] = new_hostlist
+						debug_out(str(full_ip) + ': ' + str(new_hostlist))
+						persistent_dns_for_ip[full_ip] = new_hostlist
 
 				persistent_dns_for_ip.close()
 			except:
@@ -765,8 +822,8 @@ def process_packet_source(if_name, pcap_source, user_args):
 				sniff(store=0, iface=if_name, filter=user_args['bpf'], count=user_args['count'], prn=lambda x: processpacket(x))	# pylint: disable=unnecessary-lambda
 			else:
 				sniff(store=0, iface=if_name, filter=user_args['bpf'], prn=lambda x: processpacket(x))					# pylint: disable=unnecessary-lambda
-		except Scapy_Exception:
-			sys.stderr.write("Unable to open interface " + str(pcap_source) + ' .  Permission error?  Perhaps runs as root or under sudo?  Exiting.\n')
+		except ((Scapy_Exception, PermissionError)):
+			sys.stderr.write("Unable to open interface " + str(if_name) + ' .  Permission error?  Perhaps runs as root or under sudo?  Exiting.\n')
 			raise
 	#Read from stdin
 	elif pcap_source in ('-', None):
@@ -791,14 +848,17 @@ def process_packet_source(if_name, pcap_source, user_args):
 
 	#Try to process file first
 	if source_file:
-		try:
-			if user_args['count']:
-				sniff(store=0, offline=source_file, filter=user_args['bpf'], count=user_args['count'], prn=lambda x: processpacket(x))	# pylint: disable=unnecessary-lambda
-			else:
-				sniff(store=0, offline=source_file, filter=user_args['bpf'], prn=lambda x: processpacket(x))				# pylint: disable=unnecessary-lambda
-		except (FileNotFoundError, IOError):
-			sys.stderr.write("Unable to open file " + str(pcap_source) + ', exiting.\n')
-			raise
+		if os.path.exists(source_file) and os.access(source_file, os.R_OK):
+			try:
+				if user_args['count']:
+					sniff(store=0, offline=source_file, filter=user_args['bpf'], count=user_args['count'], prn=lambda x: processpacket(x))	# pylint: disable=unnecessary-lambda
+				else:
+					sniff(store=0, offline=source_file, filter=user_args['bpf'], prn=lambda x: processpacket(x))				# pylint: disable=unnecessary-lambda
+			except (FileNotFoundError, IOError):
+				sys.stderr.write("Unable to open file " + str(pcap_source) + ', exiting.\n')
+				raise
+		else:
+			sys.stderr.write("Unable to open file " + str(source_file) + ', skipping.\n')
 
 	if close_temp:
 		tmp_packets.close()
@@ -833,7 +893,7 @@ hints = {'TCP_FLAGS_': 'Invalid/no_tcp_flags', 'TCP_FLAGS_SR': 'Invalid/syn_and_
          'ip4_0.0.0.0': 'address_unspecified', 'ip4_1.1.1.1': 'public_dns/cloudflare', 'ip4_127.0.0.1': 'localhost', 'ip4_8.8.4.4': 'public_dns/google', 'ip4_8.8.8.8': 'public_dns/google', 'ip4_75.75.75.75': 'public_dns/cdns01.comcast.net', 'ip4_75.75.76.76': 'public_dns/cdns02.comcast.net', 'ip4_75.75.77.22': 'public_dns/doh.xfinity.com', 'ip4_75.75.77.98': 'public_dns/doh.xfinity.com', 'ip4_224.0.0.1': 'all_systems_on_this_subnet', 'ip4_224.0.0.2': 'all_routers_on_this_subnet', 'ip4_224.0.0.13': 'all_pim_routers', 'ip4_224.0.0.22': 'multicast/IGMP', 'ip4_224.0.0.251': 'multicast/mDNS', 'ip4_224.0.0.252': 'multicast/LLMNR', 'ip4_224.0.1.40': 'multicast/cisco_rp_discovery', 'ip4_224.0.1.60': 'multicast/hp_device_discovery', 'ip4_239.255.255.250': 'multicast/uPNP_or_SSDP', 'ip4_255.255.255.255': 'broadcast',
          'ip6_2001:558:feed::1': 'public_dns/cdns01.comcast.net', 'ip6_2001:558:feed::2': 'public_dns/cdns02.comcast.net', 'ip6_2001:558:feed:443::98': 'public_dns/doh.xfinity.com',
          'ip6_::': 'address_unspecified', 'ip6_::1': 'localhost', 'ip6_ff02::1': 'multicast/all_nodes', 'ip6_ff02::2': 'multicast/all_routers', 'ip6_ff02::c': 'multicast/ssdp', 'ip6_ff02::16': 'multicast/MLDv2_capable_routers', 'ip6_ff02::fb': 'multicast/mDNSv6', 'ip6_ff02::1:2': 'multicast/DHCP_Relay_Agents_and_Servers', 'ip6_ff02::1:3': 'multicast/LLMNR',
-         'proto_0': 'ip', 'proto_2': 'igmp', 'proto_47': 'gre', 'proto_50': 'esp', 'proto_51': 'ah', 'proto_58': 'ipv6_icmp', 'proto_103': 'pim',
+         'proto_0': 'ip', 'proto_2': 'igmp', 'proto_47': 'gre', 'proto_47_35006': 'gre/erspan_type_II', 'proto_47_8939': 'gre/erspan_type_III', 'proto_50': 'esp', 'proto_51': 'ah', 'proto_58': 'ipv6_icmp', 'proto_103': 'pim',
          'udp_7': 'echo', 'udp_17': 'qotd', 'udp_19': 'chargen', 'udp_53': 'dns', 'udp_67': 'bootp/dhcp', 'udp_69': 'tftp', 'udp_88': 'kerberos',
          'udp_111': 'rpc', 'udp_123': 'ntp', 'udp_137': 'netbios/ns', 'udp_138': 'netbios/datagram', 'udp_161': 'snmp',
          'udp_389': 'ldap',
@@ -867,13 +927,13 @@ hints = {'TCP_FLAGS_': 'Invalid/no_tcp_flags', 'TCP_FLAGS_SR': 'Invalid/syn_and_
          'tcp_631': 'ipp',
          'tcp_873': 'rsync',
          'tcp_989': 'ftps-data', 'tcp_990': 'ftps', 'tcp_993': 'imaps',
-         'tcp_1194': 'openvpn',
+         'tcp_1119': 'bnetgame', 'tcp_1194': 'openvpn',
          'tcp_1389': 'iclpv-dm_or_alt_jndi_ldap',
          'tcp_1433': 'mssql', 'tcp_1434': 'mssql_monitor',
          'tcp_1723': 'pptp',
          'tcp_1935': 'rtmp', 'tcp_1984': 'bigbrother',
-         'tcp_3128': 'squid_proxy', 'tcp_3306': 'mysql', 'tcp_3389': 'remote_desktop_protocol', 'tcp_3478': 'webrtc',
-         'tcp_5001': 'drobo/nasd', 'tcp_5060': 'sip', 'tcp_5223': 'apple_push_notification', 'tcp_5228': 'google_talk', 'tcp_5601': 'kibana', 'tcp_5900': 'vnc/remote_framebuffer', 'tcp_5938': 'teamviewer',
+         'tcp_3128': 'squid_proxy', 'tcp_3306': 'mysql', 'tcp_3389': 'remote_desktop_protocol', 'tcp_3478': 'webrtc', 'tcp_3724': 'blizwow',
+         'tcp_5001': 'drobo/nasd', 'tcp_5060': 'sip', 'tcp_5223': 'apple_push_notification', 'tcp_5228': 'google_talk', 'tcp_5555': 'monero', 'tcp_5601': 'kibana', 'tcp_5900': 'vnc/remote_framebuffer', 'tcp_5938': 'teamviewer',
          'tcp_6379': 'redis',
          'tcp_7680': 'windows/delivery_optimization',
          'tcp_8008': 'apple_ical', 'tcp_8080': 'http-alt', 'tcp_8333': 'bitcoin',
@@ -915,6 +975,7 @@ if __name__ == '__main__':
 	(parsed, unparsed) = parser.parse_known_args()
 	cl_args = vars(parsed)
 
+	#debug_out("BPF we'll use is: " + cl_args['bpf'])
 
 	#We have to use libpcap instead of scapy's built-in code because the latter won't attach complex bpfs
 	try:
