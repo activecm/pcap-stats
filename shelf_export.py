@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Exports a shelf-created dictionary to stdout.  Tested with DBM files."""
 
-__version__ = '0.0.2'
+__version__ = '0.0.3'
 
 __author__ = 'William Stearns'
 __copyright__ = 'Copyright 2021, William Stearns'
@@ -52,7 +52,7 @@ if __name__ == '__main__':
 	import argparse
 
 	parser = argparse.ArgumentParser(description='shelf_export version ' + str(__version__))
-	parser.add_argument('-r', '--read', help='Shelf file(s) from which to read dictionary', required=False, default=default_shelf_file)
+	parser.add_argument('-r', '--read', help='Shelf file from which to read dictionary (default: %(default)s)', required=False, default=default_shelf_file)
 	(parsed, unparsed) = parser.parse_known_args()
 	cl_args = vars(parsed)
 
