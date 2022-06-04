@@ -32,6 +32,9 @@ import errno
 from scapy.all import *			#Required for Scapy 2.0 and above
 use_scapy_all = True
 
+from db_lib import buffer_merges
+from normalize_ip import ip_addr_obj
+
 
 #======== Constants ========
 KeepGoing = False		#Dont change this - it's an internal value to make the code more readable.  Change third param of ReportId instead.
@@ -146,7 +149,7 @@ include_udp_errors_in_closed_ports = False	#If True, we look at unreachables and
 
 
 #======== Variables ========
-passer_lib_version = '0.26'
+passer_lib_version = '0.28'
 
 #Indexes into the tuple used in passing data to the output handler.  _e is for "enumerated"
 Type_e = 0
@@ -754,6 +757,207 @@ def UnhandledPacket(up_packet, prefs, dests):
 		dests['unhandled'].put(up_packet)
 
 
+def save_to_db(out_rec, prefs, dests):
+	"""Take the fields in an output record tuple/list into the appropriate sqlite database."""
+
+	max_adds = 100
+
+	if prefs['db_dir'] and prefs['archive_dir']:
+		#Note; the first database in each list is created automatically
+		hostname_ips = [prefs['db_dir'] + 'hostname_ips.sqlite3', prefs['db_dir'] + 'hostname_ips.sqlite3']
+		ip_asns = [prefs['db_dir'] + 'ip_asns.sqlite3', prefs['db_dir'] + 'ip_asns.sqlite3']
+		ip_client_ports = [prefs['db_dir'] + 'ip_client_ports.sqlite3', prefs['db_dir'] + 'ip_client_ports.sqlite3']
+		ip_client_protocols = [prefs['db_dir'] + 'ip_client_protocols.sqlite3', prefs['db_dir'] + 'ip_client_protocols.sqlite3']
+		ip_closed_servers = [prefs['db_dir'] + 'ip_closed_servers.sqlite3', prefs['db_dir'] + 'ip_closed_servers.sqlite3']
+		ip_flags = [prefs['db_dir'] + 'ip_flags.sqlite3', prefs['db_dir'] + 'ip_flags.sqlite3']
+		ip_hostnames = [prefs['db_dir'] + 'ip_hostnames.sqlite3', prefs['db_dir'] + 'ip_hostnames.sqlite3']
+		ip_locations = [prefs['db_dir'] + 'ip_locations.sqlite3', prefs['db_dir'] + 'ip_locations.sqlite3']
+		ip_macaddrs = [prefs['db_dir'] + 'ip_macaddrs.sqlite3', prefs['db_dir'] + 'ip_macaddrs.sqlite3']
+		ip_mx_for = [prefs['db_dir'] + 'ip_mx_for.sqlite3', prefs['db_dir'] + 'ip_mx_for.sqlite3']
+		ip_names = [prefs['db_dir'] + 'ip_names.sqlite3', prefs['db_dir'] + 'ip_names.sqlite3']
+		ip_ns_for = [prefs['db_dir'] + 'ip_ns_for.sqlite3', prefs['db_dir'] + 'ip_ns_for.sqlite3']
+		ip_open_servers = [prefs['db_dir'] + 'ip_open_servers.sqlite3', prefs['db_dir'] + 'ip_open_servers.sqlite3']
+		ip_peers = [prefs['db_dir'] + 'ip_peers.sqlite3', prefs['db_dir'] + 'ip_peers.sqlite3']
+		ip_rhostnames = [prefs['db_dir'] + 'ip_rhostnames.sqlite3', prefs['db_dir'] + 'ip_rhostnames.sqlite3']
+	elif prefs['db_dir']:
+		hostname_ips = prefs['db_dir'] + 'hostname_ips.sqlite3'
+		ip_asns = prefs['db_dir'] + 'ip_asns.sqlite3'
+		ip_client_ports = prefs['db_dir'] + 'ip_client_ports.sqlite3'
+		ip_client_protocols = prefs['db_dir'] + 'ip_client_protocols.sqlite3'
+		ip_closed_servers = prefs['db_dir'] + 'ip_closed_servers.sqlite3'
+		ip_flags = prefs['db_dir'] + 'ip_flags.sqlite3'
+		ip_hostnames = prefs['db_dir'] + 'ip_hostnames.sqlite3'
+		ip_locations = prefs['db_dir'] + 'ip_locations.sqlite3'
+		ip_macaddrs = prefs['db_dir'] + 'ip_macaddrs.sqlite3'
+		ip_mx_for = prefs['db_dir'] + 'ip_mx_for.sqlite3'
+		ip_names = prefs['db_dir'] + 'ip_names.sqlite3'
+		ip_ns_for = prefs['db_dir'] + 'ip_ns_for.sqlite3'
+		ip_open_servers = prefs['db_dir'] + 'ip_open_servers.sqlite3'
+		ip_peers = prefs['db_dir'] + 'ip_peers.sqlite3'
+		ip_rhostnames = prefs['db_dir'] + 'ip_rhostnames.sqlite3'
+	else:
+		hostname_ips = []
+		ip_asns = []
+		ip_client_ports = []
+		ip_client_protocols = []
+		ip_closed_servers = []
+		ip_flags = []
+		ip_hostnames = []
+		ip_locations = []
+		ip_macaddrs = []
+		ip_mx_for = []
+		ip_names = []
+		ip_ns_for = []
+		ip_open_servers = []
+		ip_peers = []
+		ip_rhostnames = []
+
+	report_closed_server_ports = True
+
+	clean_ip_obj = ip_addr_obj(out_rec[IPAddr_e])
+	if clean_ip_obj is None:
+		return
+	clean_ip = explode_ip(clean_ip_obj, prefs, dests)
+
+
+	if prefs['db_dir']:
+		if out_rec[Type_e] == "DN":
+			if out_rec[Proto_e] in ('A', 'AAAA', 'CNAME', 'SRV'):
+				if clean_ip != '0.0.0.0':
+					if out_rec[Description_e]:
+						service_string = out_rec[State_e].rstrip('.') + ';' + out_rec[Description_e]
+					else:
+						service_string = out_rec[State_e].rstrip('.')
+					buffer_merges(ip_hostnames, clean_ip, [service_string,], max_adds)
+					buffer_merges(hostname_ips, out_rec[State_e].rstrip('.'), [clean_ip,], max_adds)
+			elif out_rec[Proto_e] in ('PTR'):
+				if clean_ip != '0.0.0.0':
+					if out_rec[Description_e]:
+						service_string = out_rec[State_e].rstrip('.') + ';' + out_rec[Description_e]
+					else:
+						service_string = out_rec[State_e].rstrip('.')
+					buffer_merges(ip_rhostnames, clean_ip, [service_string,], max_adds)
+					buffer_merges(hostname_ips, out_rec[State_e].rstrip('.'), [clean_ip,], max_adds)
+			elif out_rec[Proto_e] == 'NS':
+				domain = out_rec[State_e].rstrip('.')
+				#nameserver = out_rec[Description_e].rstrip('.')
+				buffer_merges(ip_ns_for, clean_ip, [domain,], max_adds)
+			elif out_rec[Proto_e] == 'MX':
+				domain = out_rec[State_e].rstrip('.')
+				#mailserver = out_rec[Description_e].rstrip('.')
+				buffer_merges(ip_mx_for, clean_ip, [domain,], max_adds)
+			elif out_rec[IPAddr_e] == '0.0.0.0' and out_rec[Proto_e] == 'SOA':
+				domain = out_rec[State_e].rstrip('.')
+				soa_fields = out_rec[Description_e].split(' ')
+				#one_dns = soa_fields[0]	#This is a nameserver _hostname_; would need manual conversion to an IP to store in ns_for.
+				#email_addr = soa_fields[1].replace('.', '@', 1)
+			elif out_rec[IPAddr_e] == '0.0.0.0' and out_rec[Proto_e] == 'TXT':
+				pass
+		#elif out_rec[Type_e] == "DO":
+		#	if out_rec[IPAddr_e] == '0.0.0.0' and out_rec[Proto_e] == 'reputation':
+		#		domain = out_rec[State_e].rstrip('.')
+		#		rep_string = out_rec[Description_e]
+		#		if rep_string:
+		elif out_rec[Type_e] == "NA":
+			if out_rec[Proto_e] in ('PTR', 'DHCP'):
+				if out_rec[Description_e]:
+					service_string = out_rec[State_e] + ';' + out_rec[Description_e]
+				else:
+					service_string = out_rec[State_e]
+				buffer_merges(ip_names, clean_ip, [service_string,], max_adds)		#Only forward at the moment
+			elif out_rec[Proto_e] in ('RP'):
+				#NA,0.0.0.0,RP,www.ktvc8.com.,dnsproxy.oray.com.
+				pass
+		#elif out_rec[Type_e] == "IP" and out_rec[Proto_e] in ("IP", "service_banner"):
+		#	if out_rec[Description_e] and out_rec[Description_e] != 'p0f failure':
+		#		service_string = out_rec[State_e] + ';' + out_rec[Description_e]
+		#	else:
+		#		service_string = out_rec[State_e]
+		elif out_rec[Type_e] == "PE" and out_rec[Proto_e] == "traceroute" and out_rec[State_e] in ('is_beyond', 'precedes'):
+			peer_ip_obj = ip_addr_obj(out_rec[Description_e])
+			if peer_ip_obj is None:
+				return
+			peer_ip = explode_ip(peer_ip_obj, prefs, dests)
+
+			buffer_merges(ip_peers, clean_ip, [peer_ip,], max_adds)
+			buffer_merges(ip_peers, peer_ip, [clean_ip,], max_adds)
+		elif out_rec[Type_e] in ("US", "UD"):
+			if out_rec[State_e] in ('open', 'listening'):
+				if out_rec[Description_e]:
+					service_string = out_rec[Proto_e] + ';' + out_rec[Description_e]
+				else:
+					service_string = out_rec[Proto_e]
+				buffer_merges(ip_open_servers, clean_ip, [service_string,], max_adds)
+			elif out_rec[State_e] == 'closed':
+				if report_closed_server_ports:
+					buffer_merges(ip_closed_servers, clean_ip, [out_rec[Proto_e],], max_adds)
+		elif out_rec[Type_e] == "UC":
+			if out_rec[State_e] == 'open':
+				if out_rec[Description_e]:
+					service_string = out_rec[Proto_e] + ';' + out_rec[Description_e]
+				else:
+					service_string = out_rec[Proto_e]
+				buffer_merges(ip_client_ports, clean_ip, [service_string,], max_adds)
+		elif out_rec[Type_e] == "TS":
+			if out_rec[State_e] == 'listening':
+				if out_rec[Description_e]:
+					service_string = out_rec[Proto_e] + ';' + out_rec[Description_e]
+				else:
+					service_string = out_rec[Proto_e]
+				buffer_merges(ip_open_servers, clean_ip, [service_string,], max_adds)
+			elif out_rec[State_e] == 'closed':
+				if report_closed_server_ports:
+					buffer_merges(ip_closed_servers, clean_ip, [out_rec[Proto_e],], max_adds)
+			#elif out_rec[State_e] == 'unknown':
+			#	if out_rec[Description_e]:
+			#		service_string = out_rec[Description_e]
+		elif out_rec[Type_e] == "TC":
+			if out_rec[State_e] == 'open':
+				if out_rec[Description_e]:
+					service_string = out_rec[Proto_e] + ';' + out_rec[Description_e]
+				else:
+					service_string = out_rec[Proto_e]
+				buffer_merges(ip_client_ports, clean_ip, [service_string,], max_adds)
+		elif out_rec[Type_e] == "RO":
+			if out_rec[State_e] == 'router':
+				buffer_merges(ip_flags, clean_ip, ['router',], max_adds)
+		elif out_rec[Type_e] == "MA":
+			if out_rec[Proto_e] == 'Ethernet':
+				if out_rec[Description_e]:
+					service_string = out_rec[State_e] + ';' + out_rec[Description_e]
+				else:
+					service_string = out_rec[State_e]
+				buffer_merges(ip_macaddrs, clean_ip, [service_string,], max_adds)
+		elif out_rec[Type_e] == "GE":
+			if out_rec[Proto_e] in ("CC", "COUNTRY", "CSC"):
+				#GE,10.0.0.0,CC,NU,
+				if out_rec[Description_e]:
+					service_string = out_rec[State_e] + ';' + out_rec[Description_e]
+				else:
+					service_string = out_rec[State_e]
+				buffer_merges(ip_locations, clean_ip, [service_string,], max_adds)
+		elif out_rec[Type_e] == "AS":
+			if out_rec[Proto_e] in ("AS"):
+				#AS,128.223.60.22,AS,3582,UONET - University of Oregon
+				if out_rec[Description_e]:
+					service_string = out_rec[State_e] + ';' + out_rec[Description_e]
+				else:
+					service_string = out_rec[State_e]
+				buffer_merges(ip_asns, clean_ip, [service_string,], max_adds)
+		elif out_rec[Type_e] == "PC":
+			if out_rec[State_e] == 'open':
+				if out_rec[Description_e]:
+					service_string = out_rec[Proto_e] + ';' + out_rec[Description_e]
+				else:
+					service_string = out_rec[Proto_e]
+				buffer_merges(ip_client_protocols, clean_ip, [service_string,], max_adds)
+		elif out_rec[Type_e] in ("NB", "NE"):
+			pass
+
+
+
+
+
 #======== Extraction functions ========
 #In the original (single process) passer script, these are called as:
 #	ReportAll(ARP_extract(p, meta, prefs, dests))
@@ -782,6 +986,27 @@ def ARP_extract(p, meta, prefs, dests):
 
 	if p[ARP].op == 2:		#"is-at"
 		state_set.add(("MA", meta['sIP'], "Ethernet", p[ARP].hwsrc.upper(), "", ()))
+
+	return state_set
+
+
+def ICMP_extract(p, meta, prefs, dests):
+	"""Pull all statements from the ICMP layer and return as a set of tuples."""
+
+	state_set = set([])
+
+	I_Type = p[ICMP].type
+	I_Code = p[ICMP].code
+
+	if I_Type in (3, 11, ):		#3=Unreachable, 11=Time exceeded.  All have embedded packets that may need attention
+		pass
+	#elif I_Type in ():
+	#else:
+	#	p.show()
+	#	sys.exit(86)
+
+	#if p[template].op == 2:
+	#	state_set.add(("MA", meta['sIP'], "Ethernet", p[template].hwsrc.upper(), "", ()))
 
 	return state_set
 
@@ -1324,7 +1549,7 @@ def DNS_extract(p, meta, prefs, dests):
 					#print "Type: " + str(type(OneAn))		#All of type scapy.DNSRR
 					#Note: rclass 32769 appears to show up in mdns records from apple
 					if OneAn.rclass in (1, 32769):
-						if OneAn.type == 1:		#"IN" class and "A" type answer
+						if OneAn.type == 1:		#"IN" class and "A" type answer	#https://en.wikipedia.org/wiki/List_of_DNS_record_types
 							DNSIPAddr = rdata_string
 							DNSHostname = rrname_string.lower()
 
@@ -1488,7 +1713,7 @@ def DNS_extract(p, meta, prefs, dests):
 										state_set.add(("US", meta['sIP'], "UDP_3690", "listening", 'svn/server not confirmed', ()))
 										state_set.add(("TS", meta['sIP'], "TCP_9418", "listening", 'git/server not confirmed', ()))
 										state_set.add(("US", meta['sIP'], "UDP_9418", "listening", 'git/server not confirmed', ()))
-									elif rdata_string in ('', '_bp2p.', '_bp2p._tcp.', '_bp2p._tcp.local.', '_chat-files.', '_chat-files._tcp.', '_chat-files._tcp.local.', '_companion-link.', '_companion-link._tcp.', '_companion-link._tcp.local.', '_coupon_printer.', '_coupon_printer._tcp.', '_coupon_printer._tcp.local', '_dltouch.', '_dltouch._tcp.', '_dltouch._tcp.local.', '_hearing.', '_hearing._tcp.', '_hearing._tcp.local.', '_mamp.', '_mamp._tcp.', '_mamp._tcp.local.', '_nasd.', '_nasd._tcp.', '_nasd._tcp.local.', '_net-assistant.', '_parentcontrol.', '_parentcontrol._tcp.', '_parentcontrol._tcp.local.', '_ptService.', '_ptService._tcp.', '_qmobile.', '_qdiscover.', '_rfb.', '_rfb._tcp.', '_rfb._tcp.local', '_tw-multipeer.', '_tw-multipeer._tcp.', '_tw-multipeer._tcp.local.', '_uscan.', '_uscan._tcp.', '_uscan._tcp.local.', '_uscans.', '_uscans._tcp.', '_uscans._tcp.local.', '_workstation.', '_workstation._tcp.', '_workstation._tcp.local.'):
+									elif rdata_string in ('', '_bp2p.', '_bp2p._tcp.', '_bp2p._tcp.local.', '_chat-files.', '_chat-files._tcp.', '_chat-files._tcp.local.', '_companion-link.', '_companion-link._tcp.', '_companion-link._tcp.local.', '_coupon_printer.', '_coupon_printer._tcp.', '_coupon_printer._tcp.local', '_device-info.', '_device-info._tcp.', '_device-info._tcp.local.', '_dltouch.', '_dltouch._tcp.', '_dltouch._tcp.local.', '_hearing.', '_hearing._tcp.', '_hearing._tcp.local.', '_mamp.', '_mamp._tcp.', '_mamp._tcp.local.', '_nasd.', '_nasd._tcp.', '_nasd._tcp.local.', '_net-assistant.', '_octoprint.', '_octoprint._tcp.', '_octoprint._tcp.local.', '_parentcontrol.', '_parentcontrol._tcp.', '_parentcontrol._tcp.local.', '_ptService.', '_ptService._tcp.', '_qmobile.', '_qdiscover.', '_rfb.', '_rfb._tcp.', '_rfb._tcp.local', '_tw-multipeer.', '_tw-multipeer._tcp.', '_tw-multipeer._tcp.local.', '_uscan.', '_uscan._tcp.', '_uscan._tcp.local.', '_uscans.', '_uscans._tcp.', '_uscans._tcp.local.', '_workstation.', '_workstation._tcp.', '_workstation._tcp.local.'):
 										pass
 									else:
 										debug_out("service scan reply:" + rdata_string, prefs, dests)
@@ -1569,6 +1794,8 @@ def DNS_extract(p, meta, prefs, dests):
 						elif OneAn.type == 50:		#"IN" class and "NSEC3" answer					https://tools.ietf.org/html/rfc5155
 							pass
 						elif OneAn.type == 52:		#"IN" class and "TLSA" answer					https://tools.ietf.org/html/rfc6698
+							pass
+						elif OneAn.type == 65:		#"IN" class and "HTTPS" answer					https://en.wikipedia.org/wiki/List_of_DNS_record_types
 							pass
 						elif OneAn.type == 99:		#"IN" class and "SPF" answer					https://tools.ietf.org/html/rfc7208
 							pass
