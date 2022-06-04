@@ -5,7 +5,7 @@
 #Internet gave thousands of us a chance to learn and grow.
 
 
-__version__ = '0.0.54'
+__version__ = '0.0.57'
 
 __author__ = 'William Stearns'
 __copyright__ = 'Copyright 2021, William Stearns'
@@ -21,11 +21,14 @@ import os
 import sys
 import time
 import tempfile
-import shelve
+#import shelve
+#FIXME - remove above
 import gzip												#Lets us read from gzip-compressed pcap files
 import bz2												#Lets us read from bzip2-compressed pcap files
 import re												#Regex matching on UUID hostnames
 import binascii
+
+from db_lib import add_to_db_dict, buffer_merges, select_key
 
 try:
 	#from scapy.all import *
@@ -38,10 +41,12 @@ except ImportError:
 
 try:
 	from scapy.contrib import erspan								# pylint: disable=unused-import
+	erspan_loaded = True
 except ImportError:
 	sys.stderr.write('Unable to load the erspan module from the scapy library contrib section.  Perhaps run   sudo apt install python3-pip || sudo yum install python3-pip ; sudo pip3 install scapy   ?\n')
 	sys.stderr.flush()
-	sys.exit(1)
+	erspan_loaded = False
+	#sys.exit(1)
 
 try:
 	from passer_lib import DNS_extract, explode_ip, generate_meta_from_packet
@@ -57,6 +62,19 @@ def debug_out(output_string):
 	if cl_args['devel']:
 		sys.stderr.write(output_string + '\n')
 		sys.stderr.flush()
+
+
+def mkdir_p(path):
+	"""Create an entire directory branch.  Will not complain if the directory already exists."""
+
+	if not os.path.isdir(path):
+		try:
+			os.makedirs(path)
+		except OSError as exc:
+			if exc.errno == errno.EEXIST and os.path.isdir(path):
+				pass
+			else:
+				raise
 
 
 def force_string(raw_string):
@@ -230,11 +248,20 @@ def processpacket(p):
 	if "ipv6s_for_mac" not in processpacket.__dict__:
 		processpacket.ipv6s_for_mac = {}
 
-	if 'dns_for_ip' not in processpacket.__dict__:			#Dictionary; keys are IP addresses, values are sets of hostnames
+	#We reinstate this to hold all the writes for hostnames, to be later submitted with add_to_db_dict
+	if 'dns_for_ip' not in processpacket.__dict__:
 		processpacket.dns_for_ip = {}
+	#This key_value_dict is in this form:
+	#{
+	#    key1: [value1, value2, value3...],
+	#    key2: [value4],
+	#    key3: [value5, value6]
+	#}
 
-	if 'netbios_for_ip' not in processpacket.__dict__:		#Dictionary; keys are IP addresses, values are sets of netbios names
-		processpacket.netbios_for_ip = {}
+
+	#if 'netbios_for_ip' not in processpacket.__dict__:		#Dictionary; keys are IP addresses, values are sets of netbios names
+	#	processpacket.netbios_for_ip = {}
+	#FIXME - remove above
 
 	if 'ports_for_ip' not in processpacket.__dict__:		#Dictionary; keys are IP addresses, values are sets of ports used by this IP (specifically, the ports at the IP's end of the connection)
 		processpacket.ports_for_ip = {}
@@ -368,9 +395,13 @@ def processpacket(p):
 				if one_tuple[2] in ('A', 'AAAA', 'PTR', 'CNAME'):
 					if one_tuple[1] and one_tuple[3]:				#Check that the IP and hostname fields are not empty
 						ip_string = force_string(one_tuple[1])
+						dns_hostname = force_string(one_tuple[3])
 						if ip_string not in processpacket.dns_for_ip:
-							processpacket.dns_for_ip[ip_string] = set()
-						processpacket.dns_for_ip[ip_string].add(force_string(one_tuple[3]))
+							processpacket.dns_for_ip[ip_string] = []
+						if dns_hostname not in processpacket.dns_for_ip[ip_string]:
+							processpacket.dns_for_ip[ip_string].append(dns_hostname)
+						#FIXME - keep above, as below is too many calls and slows down the program
+						#buffer_merges(ip_hostnames_db, ip_string, [dns_hostname], 50)
 				#else:
 				#	print(str(one_tuple))
 			elif one_tuple[0] in ('US', 'UC', 'TS', 'IP'):
@@ -384,12 +415,28 @@ def processpacket(p):
 			label = 'name_' + one_name
 			inc_stats(label, p_len)
 			processpacket.field_filter[label] = 'host ' + one_name
+	#FIXME - keep above, because select_key below is pulling entries that haven't been stored yet.
+	#if sIP and ip_hostnames_db:
+	#	all_hostnames = select_key(ip_hostnames_db[0], sIP)	#We only generate these "name_..." entries for recently added hostnames, not everything in the archives
+	#	if all_hostnames:
+	#		for one_name in all_hostnames:
+	#			label = 'name_' + one_name
+	#			inc_stats(label, p_len)
+	#			processpacket.field_filter[label] = 'host ' + one_name
 
 	if dIP and dIP in processpacket.dns_for_ip:
 		for one_name in processpacket.dns_for_ip[dIP]:
 			label = 'name_' + one_name
 			inc_stats(label, p_len)
 			processpacket.field_filter[label] = 'host ' + one_name
+	#FIXME - keep above, because select_key below is pulling entries that haven't been stored yet.
+	#if dIP and ip_hostnames_db:
+	#	all_hostnames = select_key(ip_hostnames_db[0], dIP)	#We only generate these "name_..." entries for recently added hostnames, not everything in the archives
+	#	if all_hostnames:
+	#		for one_name in all_hostnames:
+	#			label = 'name_' + one_name
+	#			inc_stats(label, p_len)
+	#			processpacket.field_filter[label] = 'host ' + one_name
 
 	if sIP != '::':
 		if ttl == 255:										#The system is sending a broadcast - it must be local
@@ -519,17 +566,21 @@ def processpacket(p):
 		if u_layer.sport == 137 and p.haslayer(NBNSQueryResponse):
 			netbios_hostname = p[NBNSQueryResponse].RR_NAME.rstrip().rstrip(nullbyte).decode('UTF-8')
 			netbios_address = p[NBNSQueryResponse].NB_ADDRESS.rstrip()						#Apparently .decode('UTF-8') is not needed for a string
-			if netbios_address not in processpacket.netbios_for_ip:
-				processpacket.netbios_for_ip[netbios_address] = set()
-			processpacket.netbios_for_ip[netbios_address].add(netbios_hostname)
+			#if netbios_address not in processpacket.netbios_for_ip:
+			#	processpacket.netbios_for_ip[netbios_address] = set()
+			#processpacket.netbios_for_ip[netbios_address].add(netbios_hostname)
 			#debug_out(netbios_address + "/137/" + netbios_hostname)
+			#FIXME - remove above, replaced by below
+			buffer_merges(ip_netbios_db, netbios_address, [netbios_hostname], 50)
 
 		if u_layer.sport == 138 and p.haslayer(NBTDatagram):
 			netbios_hostname = p[NBTDatagram].SourceName.rstrip().decode('UTF-8')
-			if sIP not in processpacket.netbios_for_ip:
-				processpacket.netbios_for_ip[sIP] = set()
-			processpacket.netbios_for_ip[sIP].add(netbios_hostname)
+			#if sIP not in processpacket.netbios_for_ip:
+			#	processpacket.netbios_for_ip[sIP] = set()
+			#processpacket.netbios_for_ip[sIP].add(netbios_hostname)
 			#debug_out(sIP + "/138/" + netbios_hostname)
+			#FIXME - remove above, replaced by below
+			buffer_merges(ip_netbios_db, sIP, [netbios_hostname], 50)
 
 	elif p.haslayer(ICMP):
 		i_layer = p.getlayer(ICMP)
@@ -628,23 +679,25 @@ def print_stats(mincount_to_show, minsize_to_show, out_format, source_string):
 
 	if "p_stats" in inc_stats.__dict__:
 
-		dns_cache_state = ''
-		dns_cache_updates_needed = []
-		try:
-			persistent_dns_for_ip = shelve.open(ip_names_cache, flag='r')
-			dns_cache_state = 'readonly'
-		except:
-			debug_out('Unable to open ip_names cache for reading')
-			persistent_dns_for_ip = {}
+		#dns_cache_state = ''
+		#dns_cache_updates_needed = []
+		#try:
+		#	persistent_dns_for_ip = shelve.open(ip_names_cache, flag='r')
+		#	dns_cache_state = 'readonly'
+		#except:
+		#	debug_out('Unable to open ip_names cache for reading')
+		#	persistent_dns_for_ip = {}
+		#FIXME - remove above
 
-		netbios_cache_state = ''
-		netbios_cache_updates_needed = []
-		try:
-			persistent_netbios_for_ip = shelve.open(netbios_names_cache, flag='r')
-			netbios_cache_state = 'readonly'
-		except:
-			debug_out('Unable to open ip_names cache for reading')
-			persistent_netbios_for_ip = {}
+		#netbios_cache_state = ''
+		#netbios_cache_updates_needed = []
+		#try:
+		#	persistent_netbios_for_ip = shelve.open(netbios_names_cache, flag='r')
+		#	netbios_cache_state = 'readonly'
+		#except:
+		#	debug_out('Unable to open ip_names cache for reading')
+		#	persistent_netbios_for_ip = {}
+		#FIXME - remove above
 
 		if out_format == 'html':
 			print('<html>')
@@ -684,16 +737,21 @@ def print_stats(mincount_to_show, minsize_to_show, out_format, source_string):
 			if desc.startswith(('ip4_', 'ip6_')) and orig_ip in processpacket.cast_type:
 				hints_list.append('cast:' + processpacket.cast_type[orig_ip])
 
-			#FIXME - break into NB: (queried) and nb: (historic)
-			if full_ip in processpacket.netbios_for_ip and full_ip in persistent_netbios_for_ip:				#Netbios name resolution isn't supported for ipv6, so it doesn't matter if we use full_ip or orig_ip.
-				hints_list.append('NB:' + str(processpacket.netbios_for_ip[full_ip].union(persistent_netbios_for_ip[full_ip])))
-				if not processpacket.netbios_for_ip[full_ip].issubset(persistent_netbios_for_ip[full_ip]):
-					netbios_cache_updates_needed.append(full_ip)
-			elif full_ip in processpacket.netbios_for_ip:
-				hints_list.append('NB:' + str(processpacket.netbios_for_ip[full_ip]))
-				netbios_cache_updates_needed.append(full_ip)
-			elif full_ip in persistent_netbios_for_ip:
-				hints_list.append('NB:' + str(persistent_netbios_for_ip[full_ip]))
+			##FIXME - break into NB: (queried) and nb: (historic)
+			#if full_ip in processpacket.netbios_for_ip and full_ip in persistent_netbios_for_ip:				#Netbios name resolution isn't supported for ipv6, so it doesn't matter if we use full_ip or orig_ip.
+			#	hints_list.append('NB:' + str(processpacket.netbios_for_ip[full_ip].union(persistent_netbios_for_ip[full_ip])))
+			#	if not processpacket.netbios_for_ip[full_ip].issubset(persistent_netbios_for_ip[full_ip]):
+			#		netbios_cache_updates_needed.append(full_ip)
+			#elif full_ip in processpacket.netbios_for_ip:
+			#	hints_list.append('NB:' + str(processpacket.netbios_for_ip[full_ip]))
+			#	netbios_cache_updates_needed.append(full_ip)
+			#elif full_ip in persistent_netbios_for_ip:
+			#	hints_list.append('NB:' + str(persistent_netbios_for_ip[full_ip]))
+			#FIXME - remove above, replaced by below
+			netbios_hostname_list = select_key(ip_netbios_db, full_ip)
+			if netbios_hostname_list:
+				hints_list.append('NB:' + str(netbios_hostname_list))
+
 
 			#FIXME - break into DNS: (queried) and dns: (historic) by dropping next block entirely...
 			#if full_ip in processpacket.dns_for_ip and full_ip in persistent_dns_for_ip:
@@ -705,30 +763,59 @@ def print_stats(mincount_to_show, minsize_to_show, out_format, source_string):
 			#		hints_list.append('DNS:' + str(orig_ip_list))
 			#	if not processpacket.dns_for_ip[full_ip].issubset(persistent_dns_for_ip[full_ip]):
 			#		dns_cache_updates_needed.append(full_ip)
-			if full_ip in processpacket.dns_for_ip:
-				#Display hostnames we looked up in this session.
+
+			#if full_ip in processpacket.dns_for_ip:
+			#	#Display hostnames we looked up in this session.
+			#	if display_uuid_hosts:
+			#		orig_ip_list = processpacket.dns_for_ip[full_ip]
+			#	else:
+			#		orig_ip_list = [x for x in processpacket.dns_for_ip[full_ip] if not re.match(uuid_match, x)]
+			#	if orig_ip_list:
+			#		hints_list.append('DNS:' + str(orig_ip_list))
+			#	dns_cache_updates_needed.append(full_ip)
+			#	recent_lookup_set = set(orig_ip_list)
+			#else:
+			#	recent_lookup_set = set()
+			#FIXME - remove above, replaced by below
+			all_hostnames = select_key(ip_hostnames_db[0], full_ip)
+			if all_hostnames:
+				#Display recent hostnames.
 				if display_uuid_hosts:
-					orig_ip_list = processpacket.dns_for_ip[full_ip]
+					orig_ip_list = all_hostnames
 				else:
-					orig_ip_list = [x for x in processpacket.dns_for_ip[full_ip] if not re.match(uuid_match, x)]
+					orig_ip_list = [x for x in all_hostnames if not re.match(uuid_match, x)]
 				if orig_ip_list:
 					hints_list.append('DNS:' + str(orig_ip_list))
-				dns_cache_updates_needed.append(full_ip)
 				recent_lookup_set = set(orig_ip_list)
 			else:
 				recent_lookup_set = set()
 
-			if full_ip in persistent_dns_for_ip:
-				#Display any hostnames that have been cached but not looked up in this session.
-				if display_uuid_hosts:
-					orig_ip_list = persistent_dns_for_ip[full_ip]
-				else:
-					orig_ip_list = [x for x in persistent_dns_for_ip[full_ip] if not re.match(uuid_match, x)]
-				if orig_ip_list:
-					#Remove dns_for_ip entries from this so we show just not-recently-looked-up hostnames after "dns:"
-					just_old_hostnames = set(orig_ip_list) - recent_lookup_set
-					if just_old_hostnames:
-						hints_list.append('dns:' + str(list(just_old_hostnames)))
+
+			#if full_ip in persistent_dns_for_ip:
+			#	#Display any hostnames that have been cached but not looked up in this session.
+			#	if display_uuid_hosts:
+			#		orig_ip_list = persistent_dns_for_ip[full_ip]
+			#	else:
+			#		orig_ip_list = [x for x in persistent_dns_for_ip[full_ip] if not re.match(uuid_match, x)]
+			#	if orig_ip_list:
+			#		#Remove dns_for_ip entries from this so we show just not-recently-looked-up hostnames after "dns:"
+			#		just_old_hostnames = set(orig_ip_list) - recent_lookup_set
+			#		if just_old_hostnames:
+			#			hints_list.append('dns:' + str(list(just_old_hostnames)))
+			#FIXME - remove above, replaced by below
+			if len(ip_hostnames_db) > 1:		#Note, this only handles case of [current, archive], not with multiple archive dbs
+				old_hostnames = select_key(ip_hostnames_db[1], full_ip)
+				if old_hostnames:
+					#Display any archive hostnames.
+					if display_uuid_hosts:
+						orig_ip_list = old_hostnames
+					else:
+						orig_ip_list = [x for x in old_hostnames if not re.match(uuid_match, x)]
+					if orig_ip_list:
+						#Remove recent dns entries from this so we show just not-recently-looked-up hostnames after "dns:"
+						just_old_hostnames = set(orig_ip_list) - recent_lookup_set
+						if just_old_hostnames:
+							hints_list.append('dns:' + str(list(just_old_hostnames)))
 
 			if inc_stats.p_stats[one_key][0] >= mincount_to_show and inc_stats.p_stats[one_key][1] >= minsize_to_show:
 				if orig_ip in processpacket.local_ips:
@@ -757,50 +844,54 @@ def print_stats(mincount_to_show, minsize_to_show, out_format, source_string):
 			print('</body></html>')
 
 
-		if dns_cache_state:
-			persistent_dns_for_ip.close()
+		#if dns_cache_state:
+		#	persistent_dns_for_ip.close()
+		#FIXME - remove above
 
-		if netbios_cache_state:
-			persistent_netbios_for_ip.close()
+		#if netbios_cache_state:
+		#	persistent_netbios_for_ip.close()
+		#FIXME - remove above
 
-		if dns_cache_updates_needed:
-			try:
-				persistent_dns_for_ip = shelve.open(ip_names_cache, writeback=True)
-				dns_cache_state = 'readwrite'
+		#if dns_cache_updates_needed:
+		#	try:
+		#		persistent_dns_for_ip = shelve.open(ip_names_cache, writeback=True)
+		#		dns_cache_state = 'readwrite'
 
-				for full_ip in dns_cache_updates_needed:
-					if full_ip in persistent_dns_for_ip:
-						new_hostlist = processpacket.dns_for_ip[full_ip].union(persistent_dns_for_ip[full_ip])
-						if len(new_hostlist.symmetric_difference(persistent_dns_for_ip[full_ip])) > 0:
-							#The old and new set are different - write out the new hostlist.
-							debug_out(str(full_ip) + ': ' + str(new_hostlist))
-							persistent_dns_for_ip[full_ip] = new_hostlist
-					else:
-						#There was no old hostlist, so write the new one out unconditionally.
-						new_hostlist = processpacket.dns_for_ip[full_ip]
-						debug_out(str(full_ip) + ': ' + str(new_hostlist))
-						persistent_dns_for_ip[full_ip] = new_hostlist
+		#		for full_ip in dns_cache_updates_needed:
+		#			if full_ip in persistent_dns_for_ip:
+		#				new_hostlist = processpacket.dns_for_ip[full_ip].union(persistent_dns_for_ip[full_ip])
+		#				if len(new_hostlist.symmetric_difference(persistent_dns_for_ip[full_ip])) > 0:
+		#					#The old and new set are different - write out the new hostlist.
+		#					debug_out(str(full_ip) + ': ' + str(new_hostlist))
+		#					persistent_dns_for_ip[full_ip] = new_hostlist
+		#			else:
+		#				#There was no old hostlist, so write the new one out unconditionally.
+		#				new_hostlist = processpacket.dns_for_ip[full_ip]
+		#				debug_out(str(full_ip) + ': ' + str(new_hostlist))
+		#				persistent_dns_for_ip[full_ip] = new_hostlist
 
-				persistent_dns_for_ip.close()
-			except:
-				debug_out('Unable to open ip_names cache for writing')
+		#		persistent_dns_for_ip.close()
+		#	except:
+		#		debug_out('Unable to open ip_names cache for writing')
+		#FIXME - remove above
 
-		if netbios_cache_updates_needed:
-			try:
-				persistent_netbios_for_ip = shelve.open(netbios_names_cache, writeback=True)
-				netbios_cache_state = 'readwrite'
+		#if netbios_cache_updates_needed:
+		#	try:
+		#		persistent_netbios_for_ip = shelve.open(netbios_names_cache, writeback=True)
+		#		netbios_cache_state = 'readwrite'
 
-				for full_ip in netbios_cache_updates_needed:
-					if full_ip in persistent_netbios_for_ip:
-						new_hostlist = processpacket.netbios_for_ip[full_ip].union(persistent_netbios_for_ip[full_ip])
-					else:
-						new_hostlist = processpacket.netbios_for_ip[full_ip]
-					debug_out(str(full_ip) + ': ' + str(new_hostlist))
-					persistent_netbios_for_ip[full_ip] = new_hostlist
+		#		for full_ip in netbios_cache_updates_needed:
+		#			if full_ip in persistent_netbios_for_ip:
+		#				new_hostlist = processpacket.netbios_for_ip[full_ip].union(persistent_netbios_for_ip[full_ip])
+		#			else:
+		#				new_hostlist = processpacket.netbios_for_ip[full_ip]
+		#			debug_out(str(full_ip) + ': ' + str(new_hostlist))
+		#			persistent_netbios_for_ip[full_ip] = new_hostlist
 
-				persistent_netbios_for_ip.close()
-			except:
-				debug_out('Unable to open ip_names cache for writing')
+		#		persistent_netbios_for_ip.close()
+		#	except:
+		#		debug_out('Unable to open ip_names cache for writing')
+		#FIXME - remove above
 
 	else:
 		sys.stderr.write('It does not appear any packets were read.  Exiting.\n')
@@ -871,7 +962,7 @@ def process_packet_source(if_name, pcap_source, user_args):
 nullbyte = binascii.unhexlify('00')
 
 display_uuid_hosts = False
-uuid_match = r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.local\.'
+uuid_match = r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.local\.*'
 
 hints = {'TCP_FLAGS_': 'Invalid/no_tcp_flags', 'TCP_FLAGS_SR': 'Invalid/syn_and_rst', 'TCP_FLAGS_FRA': 'Invalid/fin_and_rst', 'TCP_FLAGS_FSPEC': 'Invalid/fin_and_syn', 'TCP_FLAGS_FSPU': 'Invalid/fin_and_syn', 'TCP_FLAGS_FSRPAU': 'Invalid/fin_and_syn_and_rst', 'TCP_FLAGS_FSRPAUEN': 'Invalid/fin_and_syn_and_rst_christmas_tree',
          'icmp_0.0': 'echo_reply',
@@ -956,8 +1047,11 @@ ignore_layers = ('DHCP options',
 #tcp_ignore_ports = (123, 20547, 33046, 39882)		#Was used for early troubleshooting, no longer needed.
 #udp_ignore_ports = (10400, 10401, 16403, 38010)
 
-ip_names_cache = os.environ["HOME"] + '/.cache/ip_names'
-netbios_names_cache = os.environ["HOME"] + '/.cache/netbios_names'
+cache_dir = os.environ["HOME"] + '/.cache/'
+
+#FIXME - REMOVEME
+#ip_names_cache = os.environ["HOME"] + '/.cache/ip_names'
+#netbios_names_cache = os.environ["HOME"] + '/.cache/netbios_names'
 
 if __name__ == '__main__':
 	import argparse
@@ -972,6 +1066,8 @@ if __name__ == '__main__':
 	parser.add_argument('-s', '--minsize', help='Only show a record if have this many total bytes (default: %(default)s)', type=int, required=False, default=0)
 	parser.add_argument('-l', '--length', help='Which form of length to use (default: %(default)s)', choices=('ip',), required=False, default='ip')		#Reinstate this when the length function accepts them:   , choices=('ip', 'layer', 'payload')
 	parser.add_argument('-f', '--format', help='Output format (default: %(default)s)', choices=('ascii', 'html'), required=False, default='ascii')
+	parser.add_argument('--db_dir', help='Directory that holds sqlite databases for IP and hostname info', required=False, default=cache_dir + '/ip/')
+	parser.add_argument('--archive_dir', help='Directory that holds read-only older sqlite databases for IP and hostname info', required=False, default=cache_dir + '/ip_archive/')
 	(parsed, unparsed) = parser.parse_known_args()
 	cl_args = vars(parsed)
 
@@ -982,6 +1078,21 @@ if __name__ == '__main__':
 		conf.use_pcap = True
 	except:
 		config.use_pcap = True
+
+	if cl_args['db_dir']:
+		mkdir_p(cl_args['db_dir'])
+	if cl_args['archive_dir']:
+		mkdir_p(cl_args['archive_dir'])
+
+	if cl_args['db_dir'] and cl_args['archive_dir']:
+		ip_netbios_db = [cl_args['db_dir'] + 'ip_names.sqlite3', cl_args['archive_dir'] + 'ip_names.sqlite3']
+		ip_hostnames_db = [cl_args['db_dir'] + 'ip_hostnames.sqlite3', cl_args['archive_dir'] + 'ip_hostnames.sqlite3']
+	elif cl_args['db_dir']:
+		ip_netbios_db = [cl_args['db_dir'] + 'ip_names.sqlite3']
+		ip_hostnames_db = [cl_args['db_dir'] + 'ip_hostnames.sqlite3']
+	else:
+		ip_netbios_db = []
+		ip_hostnames_db = []
 
 	read_from_stdin = False		#If stdin requested, it needs to be processed last, so we remember it here.  We also handle the case where the user enters '-' more than once by simply remembering it.
 	if cl_args['interface'] and cl_args['read']:
@@ -1014,6 +1125,12 @@ if __name__ == '__main__':
 		if cl_args['interface']:
 			process_packet_source(cl_args['interface'], None, cl_args)
 	except KeyboardInterrupt:
-		pass
+		buffer_merges('', '', [], 0)
 
+	if 'dns_for_ip' in processpacket.__dict__:
+		add_to_db_dict(ip_hostnames_db, processpacket.dns_for_ip)		#Save all the buffered up ip->hostname_lists in the writeable database
+
+
+	buffer_merges('', '', [], 0)
 	print_stats(cl_args['mincount'], cl_args['minsize'], cl_args['format'], data_source)
+	buffer_merges('', '', [], 0)
