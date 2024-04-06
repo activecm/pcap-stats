@@ -5,7 +5,7 @@
 #list of string filenames, in which case dbfiles[0] is the only one that can be written and created - the rest are
 #read-only and will not be created if not already there.
 
-__version__ = '0.3.1'
+__version__ = '0.3.4'
 
 __author__ = 'David Quartarolo'
 __copyright__ = 'Copyright 2022, David Quartarolo'
@@ -19,6 +19,7 @@ __status__ = 'Development'				#Prototype, Development or Production
 import hashlib
 import json
 import os
+import random
 import sqlite3
 import string
 import sys
@@ -87,7 +88,7 @@ def setup_db(dbfiles: Union[str, list]) -> Boolean:
 
 
 def insert_key(dbfiles: Union[str, list], key_str: str, value_obj: Any) -> Boolean:
-    '''Inserts key_str and its associates python object into database
+    '''Inserts key_str and its associated python object into database
     serializing the object on the way in.'''
     #This will add a new row if the key isn't there, and replace the existing value if it is.
 
@@ -216,6 +217,50 @@ def select_key(dbfiles: Union[str, list], key_str: str):
     return value_obj
 
 
+def select_random(dbfiles: Union[str, list]) -> tuple:
+    '''Selects a random key,value tuple from from all databases (both
+    the sole read-write database at position 0 and the remaining
+    read-only databases.). The return value is a single key,value
+    tuple (unless all databases have no k,v pairs, in which case we
+    return ('', []) .'''
+    #Note this isn't balanced - k,v pairs from small databases will show
+    #up more frequently than k,v pairs from large databases.
+
+    kv_tuples: list = []
+
+    if not dbfiles:
+        dbfile_list: list = []
+    elif isinstance(dbfiles, (list, tuple)):
+        dbfile_list = dbfiles
+    else:
+        dbfile_list = [dbfiles]
+
+    if dbfile_list and dbfile_list[0]:
+        if not os.path.exists(dbfile_list[0]):
+            setup_db(dbfile_list[0])
+
+    for dbfile in dbfile_list:
+        if dbfile:						#If dbfile is None, don't do anything.
+            with sqlite3.connect("file:" + dbfile + "?mode=ro", uri=True, timeout=sqlite_timeout) as conn:
+                entry_cursor = conn.execute("SELECT KEY_STR, JSON_STR FROM main ORDER BY RANDOM() LIMIT 1")			#We grab a random record from each database that has entries.
+                entry = entry_cursor.fetchall()
+                if len(entry) > 0:
+                    new_key = entry[0][0]
+                    #First [0] is the first row returned (which should be the only row returned as keys are unique.)
+                    #Second [0] is the first column (KEY_STR)
+                    #new_key will generally be a string (possibly '' or None)
+                    if new_key:
+                        new_val = json.loads(entry[0][1])
+                        #Second [1] is the second column (JSON_STR)
+                        #new_val will generally be a list, (possibly [] or None)
+                        kv_tuples.append( (new_key, new_val) )
+
+    if kv_tuples:
+        return random.choice(kv_tuples)												#From the N records from N databases, we pick a single line to return
+    else:
+        return ('', [])
+
+
 def select_key_large_value(dbfiles: Union[str, list], large_dbfiles: Union[str, list], key_str: str):
     '''Searches for key_str from database. If the key_str is found,
     the obj is unserialized and returned as the original type of that value.'''
@@ -288,9 +333,6 @@ def select_all(dbfiles: Union[str, list], return_values: Boolean = True) -> list
 def should_add(dbfiles: Union[str, list], key_str: str, existing_list: list, new_value: str) -> Boolean:
     '''Make a decision about whether we should add a new value to an existing list.'''
 
-    if "empty_list" not in should_add.__dict__:
-        should_add.empty_list = [None for j in range(30)]
-
     if not dbfiles:
         dbfile_list: list = []
     elif isinstance(dbfiles, (list, tuple)):
@@ -317,7 +359,7 @@ def should_add(dbfiles: Union[str, list], key_str: str, existing_list: list, new
         decision = False
     elif new_value in ('', '0.0.0.0', '0000:0000:0000:0000:0000:0000:0000:0000'):
         decision = False
-    elif new_value == should_add.empty_list:
+    elif new_value == [None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None]:
         decision = False
 
     #Add valid character checks
@@ -538,10 +580,13 @@ def buffer_merges(dbfiles: Union[str, list], key_str: str, new_values: list, max
     You _must_ call this with buffer_merges('', '', [], 0) to flush any remaining writes before shutting down."""
 
     if 'last_flush' not in buffer_merges.__dict__:
-        buffer_merges.last_flush = time.time()		#We set "last_flush" to now when we first enter this function.  Used to make sure nothing stays around forever.
+        buffer_merges.last_flush = time.time()								# type: ignore
+        #It appears we have to ignore persistent variable types as mypy doesn't recognize them.
+        #We set "last_flush" to now when we first enter this function.  Used to make sure nothing stays around forever.
 
     if 'additions' not in buffer_merges.__dict__:
-        buffer_merges.additions = {}			#Key is the database file, value is a list of queued writes for that database::
+        buffer_merges.additions = {}									# type: ignore
+        #Key is the database file, value is a list of queued writes for that database::
         #{"dbfile1":
         #  [
         #    [key1, [value1, value2, value3...]],
@@ -567,34 +612,37 @@ def buffer_merges(dbfiles: Union[str, list], key_str: str, new_values: list, max
         else:
             new_values_list = [new_values]
         #First, add any new values to the "additions" structure.
-        if dbfile not in buffer_merges.additions:
-            buffer_merges.additions[dbfile] = [ [key_str, new_values_list] ]
+        if dbfile not in buffer_merges.additions:							# type: ignore
+            buffer_merges.additions[dbfile] = [ [key_str, new_values_list] ]				# type: ignore
         else:
             found_key = None
-            for x in range(len(buffer_merges.additions[dbfile])):
-                if buffer_merges.additions[dbfile][x][0] == key_str:
+            for x in range(len(buffer_merges.additions[dbfile])):					# type: ignore
+                if buffer_merges.additions[dbfile][x][0] == key_str:					# type: ignore
                     found_key = x
                     break
             if found_key is None:
                 #Add a new line with the new values
                 #found_key = len(buffer_merges.additions[dbfile])	#This is technically where the new entry will be appended to, but we don't need found_key to append to the list.
-                buffer_merges.additions[dbfile].append([key_str, new_values_list])
+                buffer_merges.additions[dbfile].append([key_str, new_values_list])			# type: ignore
             else:
                 #Merge new values into buffer_merges.additions[dbfile][found_key]
                 for one_val in new_values_list:
-                    if one_val not in buffer_merges.additions[dbfile][found_key][1]:
-                        buffer_merges.additions[dbfile][found_key][1].append(one_val)
+                    if one_val not in buffer_merges.additions[dbfile][found_key][1]:			# type: ignore
+                        buffer_merges.additions[dbfile][found_key][1].append(one_val)			# type: ignore
 
-    if time.time() - buffer_merges.last_flush > 600:	#Note; this forces a flush the _first time we're called_ more than 10 minutes since the last.  This does not force writes until we get called!
+    if time.time() - buffer_merges.last_flush > 600:							# type: ignore
+        #Note; this forces a flush the _first time we're called_ more than 10 minutes since the last.  This does not force writes until we get called!
         force_flush = True
-        buffer_merges.last_flush = time.time()
+        buffer_merges.last_flush = time.time()								# type: ignore
     else:
         force_flush = False
 
-    for one_db in buffer_merges.additions:		# pylint: disable=consider-using-dict-items
-        if force_flush or len(buffer_merges.additions[one_db]) >= max_adds:		#Push out if too many items in queue for this database or it's been over 10 minutes since the last full flush
-            success = success and add_to_db_multiple_lists(one_db, buffer_merges.additions[one_db])
-            buffer_merges.additions[one_db] = []
+    for one_db in buffer_merges.additions:								# type: ignore
+													# pylint: disable=consider-using-dict-items
+        if force_flush or len(buffer_merges.additions[one_db]) >= max_adds:				# type: ignore
+            #Push out if too many items in queue for this database or it's been over 10 minutes since the last full flush
+            success = success and add_to_db_multiple_lists(one_db, buffer_merges.additions[one_db])	# type: ignore
+            buffer_merges.additions[one_db] = []							# type: ignore
 
     return success
 
@@ -689,10 +737,12 @@ def buffer_delete_vals(dbfiles: Union[str, list], key_str: str, delete_values: l
     You _must_ call this with buffer_delete_vals('', '', [], 0) to flush any remaining writes before shutting down."""
 
     if 'last_flush' not in buffer_delete_vals.__dict__:
-        buffer_delete_vals.last_flush = time.time()		#We set "last_flush" to now when we first enter this function.  Used to make sure nothing stays around forever.
+        buffer_delete_vals.last_flush = time.time()							# type: ignore
+        #We set "last_flush" to now when we first enter this function.  Used to make sure nothing stays around forever.
 
     if 'removals' not in buffer_delete_vals.__dict__:
-        buffer_delete_vals.removals = {}			#Key is the database file, value is a list of queued writes for that database::
+        buffer_delete_vals.removals = {}								# type: ignore
+        #Key is the database file, value is a list of queued writes for that database::
         #{"dbfile1":
         #  [
         #    [key1, [value1, value2, value3...]],
@@ -718,34 +768,36 @@ def buffer_delete_vals(dbfiles: Union[str, list], key_str: str, delete_values: l
         else:
             delete_values_list = [delete_values]
         #First, add any deletion values to the "removals" structure.
-        if dbfile not in buffer_delete_vals.removals:
-            buffer_delete_vals.removals[dbfile] = [ [key_str, delete_values_list] ]
+        if dbfile not in buffer_delete_vals.removals:							# type: ignore
+            buffer_delete_vals.removals[dbfile] = [ [key_str, delete_values_list] ]			# type: ignore
         else:
             found_key = None
-            for x in range(len(buffer_delete_vals.removals[dbfile])):
-                if buffer_delete_vals.removals[dbfile][x][0] == key_str:
+            for x in range(len(buffer_delete_vals.removals[dbfile])):					# type: ignore
+                if buffer_delete_vals.removals[dbfile][x][0] == key_str:				# type: ignore
                     found_key = x
                     break
             if found_key is None:
                 #Add a new line with the new values
                 #found_key = len(buffer_delete_vals.removals[dbfile])	#This is technically where the new entry will be appended to, but we don't need found_key to append to the list.
-                buffer_delete_vals.removals[dbfile].append([key_str, delete_values_list])
+                buffer_delete_vals.removals[dbfile].append([key_str, delete_values_list])		# type: ignore
             else:
                 #Merge new values into buffer_delete_vals.removals[dbfile][found_key]
                 for one_val in delete_values_list:
-                    if one_val not in buffer_delete_vals.removals[dbfile][found_key][1]:
-                        buffer_delete_vals.removals[dbfile][found_key][1].append(one_val)
+                    if one_val not in buffer_delete_vals.removals[dbfile][found_key][1]:		# type: ignore
+                        buffer_delete_vals.removals[dbfile][found_key][1].append(one_val)		# type: ignore
 
-    if time.time() - buffer_delete_vals.last_flush > 600:	#Note; this forces a flush the _first time we're called_ more than 10 minutes since the last.  This does not force writes until we get called!
+    if time.time() - buffer_delete_vals.last_flush > 600:						# type: ignore
+        #Note; this forces a flush the _first time we're called_ more than 10 minutes since the last.  This does not force writes until we get called!
         force_flush = True
-        buffer_delete_vals.last_flush = time.time()
+        buffer_delete_vals.last_flush = time.time()							# type: ignore
     else:
         force_flush = False
 
-    for one_db in buffer_delete_vals.removals:			# pylint: disable=consider-using-dict-items
-        if force_flush or len(buffer_delete_vals.removals[one_db]) >= max_dels:
-            success = success and remove_from_db_multiple_lists(one_db, buffer_delete_vals.removals[one_db])
-            buffer_delete_vals.removals[one_db] = []
+    for one_db in buffer_delete_vals.removals:								# type: ignore
+													# pylint: disable=consider-using-dict-items
+        if force_flush or len(buffer_delete_vals.removals[one_db]) >= max_dels:				# type: ignore
+            success = success and remove_from_db_multiple_lists(one_db, buffer_delete_vals.removals[one_db])	# type: ignore
+            buffer_delete_vals.removals[one_db] = []							# type: ignore
 
     return success
 

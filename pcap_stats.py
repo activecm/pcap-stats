@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Print statistics of a pcap file or packets arriving on an interface."""
 
+from __future__ import annotations
+
 #Dedicated to the memory of Alan Paller, whose vision of a secure
 #Internet gave thousands of us a chance to learn and grow.
 
 
-__version__ = '0.0.57'
+__version__ = '0.0.63'
 
 __author__ = 'William Stearns'
 __copyright__ = 'Copyright 2021, William Stearns'
@@ -21,12 +23,12 @@ import os
 import sys
 import time
 import tempfile
-#import shelve
-#FIXME - remove above
+import errno
 import gzip												#Lets us read from gzip-compressed pcap files
 import bz2												#Lets us read from bzip2-compressed pcap files
 import re												#Regex matching on UUID hostnames
 import binascii
+from typing import List, Optional, Union, cast
 
 from db_lib import add_to_db_dict, buffer_merges, select_key
 
@@ -56,7 +58,7 @@ except ImportError:
 	sys.exit(1)
 
 
-def debug_out(output_string):
+def debug_out(output_string: str) -> None:
 	"""Send debuging output to stderr."""
 
 	if cl_args['devel']:
@@ -64,7 +66,7 @@ def debug_out(output_string):
 		sys.stderr.flush()
 
 
-def mkdir_p(path):
+def mkdir_p(path: str) -> None:
 	"""Create an entire directory branch.  Will not complain if the directory already exists."""
 
 	if not os.path.isdir(path):
@@ -73,22 +75,25 @@ def mkdir_p(path):
 		except OSError as exc:
 			if exc.errno == errno.EEXIST and os.path.isdir(path):
 				pass
+			elif exc.errno == errno.EEXIST:
+				sys.stderr.write(path + ' exists, so we cannot create it as a directory.  Exiting.\n')
+				sys.stderr.flush()
+				sys.exit(1)
 			else:
 				raise
 
 
-def force_string(raw_string):
+def force_string(raw_string: Union[bytes|str|List]) -> str:
 	"""Make sure the returned object is a string."""
 
-	retval = raw_string
 
 	if sys.version_info > (3, 0):		#Python 3
 		if isinstance(raw_string, bytes):
-			retval = raw_string.decode("utf-8", 'replace')
+			retval = cast(str, raw_string.decode("utf-8", 'replace'))
 		elif isinstance(raw_string, str):
-			pass
+			retval = cast(str, raw_string)
 		elif isinstance(raw_string, list):
-			retval = ' '.join([force_string(listitem) for listitem in raw_string])
+			retval = cast(str, ' '.join([force_string(listitem) for listitem in raw_string]))
 			#print(str(type(raw_string)))
 			#print("huh:" + str(raw_string))
 			#sys.exit()
@@ -103,7 +108,7 @@ def force_string(raw_string):
 	return retval
 
 
-def open_bzip2_file_to_tmp_file(bzip2_filename):
+def open_bzip2_file_to_tmp_file(bzip2_filename: str) -> str:
 	"""Open up a bzip2 file to a temporary file and return that filename."""
 
 	tmp_fd, tmp_path = tempfile.mkstemp()
@@ -117,7 +122,7 @@ def open_bzip2_file_to_tmp_file(bzip2_filename):
 		raise
 
 
-def open_gzip_file_to_tmp_file(gzip_filename):
+def open_gzip_file_to_tmp_file(gzip_filename: str) -> str:
 	"""Open up a gzip file to a temporary file and return that filename."""
 
 	tmp_fd, tmp_path = tempfile.mkstemp()
@@ -131,7 +136,7 @@ def open_gzip_file_to_tmp_file(gzip_filename):
 		raise
 
 
-def packet_layers(pkt):
+def packet_layers(pkt) -> List:
 	"""Returns a list of packet layers."""
 
 	layers = []
@@ -149,7 +154,7 @@ def packet_layers(pkt):
 	#Sample return	['Ethernet', 'IP', 'TCP']
 
 
-def packet_len(packet, whichlayer):													# pylint: disable=unused-argument
+def packet_len(packet, whichlayer) -> int:								# pylint: disable=unused-argument
 	"""Finds the appropriate length of the packet based on user preference."""
 	#FIXME - only the IP/IPv6 option works at the moment.
 
@@ -185,16 +190,16 @@ def packet_len(packet, whichlayer):													# pylint: disable=unused-argumen
 	return pack_len
 
 
-def inc_stats(one_label, length):
+def inc_stats(one_label: str, length: int) -> None:
 	"""Increment the packet count and total size for this layer."""
 
 	if "p_stats" not in inc_stats.__dict__:
-		inc_stats.p_stats = {'count': [0, 0]}
+		inc_stats.p_stats = {'count': [0, 0]}							# type: ignore
 
-	if one_label not in inc_stats.p_stats:
-		inc_stats.p_stats[one_label] = [0, 0]
-	inc_stats.p_stats[one_label][0] += 1
-	inc_stats.p_stats[one_label][1] += length
+	if one_label not in inc_stats.p_stats:								# type: ignore
+		inc_stats.p_stats[one_label] = [0, 0]							# type: ignore
+	inc_stats.p_stats[one_label][0] += 1								# type: ignore
+	inc_stats.p_stats[one_label][1] += length							# type: ignore
 
 
 def processpacket(p):
@@ -204,7 +209,7 @@ def processpacket(p):
 		processpacket.field_filter = {'count': '', 'ARP': 'arp',
 		'DHCP6 IA Address Option (IA TA or IA NA suboption)': 'udp port 546 or udp port 547', 'DHCP6 Preference Option': 'udp port 546 or udp port 547', 'DHCP6 Server Identifier Option': 'udp port 546 or udp port 547', 'DHCP6 Status Code Option': 'udp port 546 or udp port 547', 'DHCPv6 Confirm Message': 'udp port 546 or udp port 547', 'DHCPv6 Reply Message': 'udp port 546 or udp port 547',
 		'DNS': 'port 53 or udp port 5353 or udp port 5355', 'ESP': 'ip proto esp',
-		'ICMPv6 Neighbor Discovery - Neighbor Advertisement': 'icmp6[0] == 136', 'ICMPv6 Neighbor Discovery - Neighbor Solicitation': 'icmp6[0] == 135', 'ICMPv6 Neighbor Discovery - Router Solicitation': 'icmp6[0] == 133', 'IP': 'ip', 'ICMP': 'icmp', 'IPv6': 'ip6', 'ISAKMP': 'port 500 or udp port 4500',
+		'ICMPv6 Neighbor Discovery - Neighbor Advertisement': 'icmp6[0] == 136', 'icmp6_136.0': 'icmp6[0] == 136', 'ICMPv6 Neighbor Discovery - Neighbor Solicitation': 'icmp6[0] == 135', 'icmp6_135.0': 'icmp6[0] == 135', 'ICMPv6 Neighbor Discovery - Router Advertisement': 'icmp6[0] == 134', 'icmp6_134.0': 'icmp6[0] == 134', 'ICMPv6 Neighbor Discovery - Router Solicitation': 'icmp6[0] == 133', 'IP': 'ip', 'ICMP': 'icmp', 'IPv6': 'ip6', 'ISAKMP': 'port 500 or udp port 4500',
 		'Loopback': '-i lo',
 		'NTPHeader': 'udp port 123', 'RIP_entry': 'udp port 520', 'RIP_header': 'udp port 520', 'SNMP': 'port 161 or port 162', 'TCP': 'tcp', 'TFTP_Read_Request': 'port 69', 'TFTP_opcode': 'port 69', 'UDP': 'udp', '802.1Q': 'vlan',
 		'TCP_FLAGS_': 'tcp[12:2] & 0x01ff = 0x0000', 'TCP_FLAGS_F': 'tcp[12:2] & 0x01ff = 0x0001', 'TCP_FLAGS_S': 'tcp[12:2] & 0x01ff = 0x0002', 'TCP_FLAGS_R': 'tcp[12:2] & 0x01ff = 0x0004', 'TCP_FLAGS_SR': 'tcp[12:2] & 0x01ff = 0x0006', 'TCP_FLAGS_RP': 'tcp[12:2] & 0x01ff = 0x000C',
@@ -239,14 +244,17 @@ def processpacket(p):
 		processpacket.local_ips = set([])
 
 	if "minstamp" not in processpacket.__dict__:
-		processpacket.minstamp = None
+		processpacket.minstamp = None								#None, or float holding the minimum timestamp (usually from the first packet) of any encountered packet
 	if "maxstamp" not in processpacket.__dict__:
-		processpacket.maxstamp = None
+		processpacket.maxstamp = None								#None, or float holding the maximum timestamp (usually from the last packet) of any encountered packet
 
 	if "ipv4s_for_mac" not in processpacket.__dict__:
-		processpacket.ipv4s_for_mac = {}
+		processpacket.ipv4s_for_mac = {}							#Key is a mac address, value is a set of IPv4 address strings
 	if "ipv6s_for_mac" not in processpacket.__dict__:
-		processpacket.ipv6s_for_mac = {}
+		processpacket.ipv6s_for_mac = {}							#Key is a mac address, value is a set of IPv4 address strings
+
+	if "debug_shown" not in processpacket.__dict__:
+		processpacket.debug_shown = []								#List of strings we've already shown
 
 	#We reinstate this to hold all the writes for hostnames, to be later submitted with add_to_db_dict
 	if 'dns_for_ip' not in processpacket.__dict__:
@@ -257,11 +265,6 @@ def processpacket(p):
 	#    key2: [value4],
 	#    key3: [value5, value6]
 	#}
-
-
-	#if 'netbios_for_ip' not in processpacket.__dict__:		#Dictionary; keys are IP addresses, values are sets of netbios names
-	#	processpacket.netbios_for_ip = {}
-	#FIXME - remove above
 
 	if 'ports_for_ip' not in processpacket.__dict__:		#Dictionary; keys are IP addresses, values are sets of ports used by this IP (specifically, the ports at the IP's end of the connection)
 		processpacket.ports_for_ip = {}
@@ -466,7 +469,7 @@ def processpacket(p):
 	#	else:
 	#		processpacket.field_filter[label] = 'src host ' + sIP + ' and ip[8] = ' + str(ttl)
 
-	p_epoch = p.time				#Seconds and microseconds since the epoch of this packet
+	p_epoch: float = p.time				#Seconds and microseconds since the epoch of this packet
 	if processpacket.minstamp is None or p_epoch < processpacket.minstamp:
 		processpacket.minstamp = p_epoch
 
@@ -503,7 +506,10 @@ def processpacket(p):
 		#elif t_layer.sport in tcp_ignore_ports and t_layer.dport in tcp_ignore_ports:		#Was used for early troubleshooting, no longer needed.
 		#	pass
 		else:
-			debug_out("No tcp server port: " + str(t_layer.sport) + " " + str(t_layer.dport))	#FIXME - only write this once.
+			warning = "No tcp server port: " + str(t_layer.sport) + " " + str(t_layer.dport)
+			if warning not in processpacket.debug_shown:
+				debug_out(warning)
+				processpacket.debug_shown.append(warning)
 			#p.show()
 			#sys.exit(96)
 
@@ -566,20 +572,10 @@ def processpacket(p):
 		if u_layer.sport == 137 and p.haslayer(NBNSQueryResponse):
 			netbios_hostname = p[NBNSQueryResponse].RR_NAME.rstrip().rstrip(nullbyte).decode('UTF-8')
 			netbios_address = p[NBNSQueryResponse].NB_ADDRESS.rstrip()						#Apparently .decode('UTF-8') is not needed for a string
-			#if netbios_address not in processpacket.netbios_for_ip:
-			#	processpacket.netbios_for_ip[netbios_address] = set()
-			#processpacket.netbios_for_ip[netbios_address].add(netbios_hostname)
-			#debug_out(netbios_address + "/137/" + netbios_hostname)
-			#FIXME - remove above, replaced by below
 			buffer_merges(ip_netbios_db, netbios_address, [netbios_hostname], 50)
 
 		if u_layer.sport == 138 and p.haslayer(NBTDatagram):
 			netbios_hostname = p[NBTDatagram].SourceName.rstrip().decode('UTF-8')
-			#if sIP not in processpacket.netbios_for_ip:
-			#	processpacket.netbios_for_ip[sIP] = set()
-			#processpacket.netbios_for_ip[sIP].add(netbios_hostname)
-			#debug_out(sIP + "/138/" + netbios_hostname)
-			#FIXME - remove above, replaced by below
 			buffer_merges(ip_netbios_db, sIP, [netbios_hostname], 50)
 
 	elif p.haslayer(ICMP):
@@ -647,7 +643,7 @@ def processpacket(p):
 		sys.exit(92)
 
 
-def hints_for(proto_desc, list_of_hints):
+def hints_for(proto_desc: str, list_of_hints: List) -> str:
 	"""For a given protocol, return the appropriate hint information to go in field 5 of the output."""
 
 	hint_return = ''
@@ -674,30 +670,10 @@ def hints_for(proto_desc, list_of_hints):
 	return hint_return
 
 
-def print_stats(mincount_to_show, minsize_to_show, out_format, source_string):
+def print_stats(mincount_to_show: int, minsize_to_show: int, out_format: str, source_string: str) -> None:
 	"""Show statistics"""
 
 	if "p_stats" in inc_stats.__dict__:
-
-		#dns_cache_state = ''
-		#dns_cache_updates_needed = []
-		#try:
-		#	persistent_dns_for_ip = shelve.open(ip_names_cache, flag='r')
-		#	dns_cache_state = 'readonly'
-		#except:
-		#	debug_out('Unable to open ip_names cache for reading')
-		#	persistent_dns_for_ip = {}
-		#FIXME - remove above
-
-		#netbios_cache_state = ''
-		#netbios_cache_updates_needed = []
-		#try:
-		#	persistent_netbios_for_ip = shelve.open(netbios_names_cache, flag='r')
-		#	netbios_cache_state = 'readonly'
-		#except:
-		#	debug_out('Unable to open ip_names cache for reading')
-		#	persistent_netbios_for_ip = {}
-		#FIXME - remove above
 
 		if out_format == 'html':
 			print('<html>')
@@ -707,77 +683,48 @@ def print_stats(mincount_to_show, minsize_to_show, out_format, source_string):
 			print('<body>')
 			print('<table border=1>')
 			print('<tr><th colspan=6 bgcolor="#ffffff">Pcap Statistics for ' + source_string + '</th></tr>')
-			print("<tr><th colspan=5>Begin_time: " + time.asctime(time.gmtime(int(processpacket.minstamp))) + ", End_time: " + time.asctime(time.gmtime(int(processpacket.maxstamp))) + ", Elapsed_time: " + str(processpacket.maxstamp - processpacket.minstamp) + " seconds</th></tr>")
+			print("<tr><th colspan=5>Begin_time: " + time.asctime(time.gmtime(int(processpacket.minstamp))) + ", End_time: " + time.asctime(time.gmtime(int(processpacket.maxstamp))) + ", Elapsed_time: " + str(processpacket.maxstamp - processpacket.minstamp) + " seconds</th></tr>")	# type: ignore
 			print('<tr><th>Count</th><th>Bytes</th><th>Description</th><th>BPF expression</th><th>Hint</th></tr>')
 
 			#print(inc_stats.p_stats)
 			#print("Local_IPs: " + str(sorted(processpacket.local_ips)))
 
 		elif out_format == 'ascii':
-			print("Begin_time: " + time.asctime(time.gmtime(int(processpacket.minstamp))))
-			print("End_time: " + time.asctime(time.gmtime(int(processpacket.maxstamp))))
-			print("Elapsed_time: " + str(processpacket.maxstamp - processpacket.minstamp))
+			print("Begin_time: " + time.asctime(time.gmtime(int(processpacket.minstamp))))	# type: ignore
+			print("End_time: " + time.asctime(time.gmtime(int(processpacket.maxstamp))))	# type: ignore
+			print("Elapsed_time: " + str(processpacket.maxstamp - processpacket.minstamp))	# type: ignore
 
-		for one_key in sorted(inc_stats.p_stats.keys()):
-			hints_list = []
-			desc = one_key.replace(' ', '_')
-			orig_ip = desc.replace('ip4_', '').replace('ip6_', '')
+		for one_key in sorted(inc_stats.p_stats.keys()):					# type: ignore
+			hints_list: List = []
+			desc: str = one_key.replace(' ', '_')
+			orig_ip: str = desc.replace('ip4_', '').replace('ip6_', '')
 			full_ip = explode_ip(orig_ip, {}, {})
 
-			if desc.startswith(('ip4_', 'ip6_')) and orig_ip in processpacket.ports_for_ip:
-				if len(processpacket.ports_for_ip[orig_ip]) == 1:
-					for sole_port in processpacket.ports_for_ip[orig_ip]:
-						break											#Just retrieve the sole entry in the set
-					hints_list.append('sole_port:' + str(sole_port))						# pylint: disable=undefined-loop-variable
-				elif len(processpacket.ports_for_ip[orig_ip]) == 2 and 'udp_53' in processpacket.ports_for_ip[orig_ip] and 'tcp_53' in processpacket.ports_for_ip[orig_ip]:
+			if desc.startswith(('ip4_', 'ip6_')) and orig_ip in processpacket.ports_for_ip:	# type: ignore
+				if len(processpacket.ports_for_ip[orig_ip]) == 1:			# type: ignore
+					for sole_port in processpacket.ports_for_ip[orig_ip]:		# type: ignore
+						break							#Just retrieve the sole entry in the set
+					hints_list.append('sole_port:' + str(sole_port))		# pylint: disable=undefined-loop-variable
+				elif len(processpacket.ports_for_ip[orig_ip]) == 2 and 'udp_53' in processpacket.ports_for_ip[orig_ip] and 'tcp_53' in processpacket.ports_for_ip[orig_ip]:	# type: ignore
 					hints_list.append('sole_port:udp_53_and_tcp_53')
 				else:
-					hints_list.append(str(len(processpacket.ports_for_ip[orig_ip])) + ' ports')
+					hints_list.append(str(len(processpacket.ports_for_ip[orig_ip])) + ' ports')	# type: ignore
 
-			if desc.startswith(('ip4_', 'ip6_')) and orig_ip in processpacket.cast_type:
-				hints_list.append('cast:' + processpacket.cast_type[orig_ip])
+			if desc.startswith(('ip4_', 'ip6_')) and orig_ip in processpacket.cast_type:	# type: ignore
+				hints_list.append('cast:' + processpacket.cast_type[orig_ip])		# type: ignore
 
-			##FIXME - break into NB: (queried) and nb: (historic)
-			#if full_ip in processpacket.netbios_for_ip and full_ip in persistent_netbios_for_ip:				#Netbios name resolution isn't supported for ipv6, so it doesn't matter if we use full_ip or orig_ip.
-			#	hints_list.append('NB:' + str(processpacket.netbios_for_ip[full_ip].union(persistent_netbios_for_ip[full_ip])))
-			#	if not processpacket.netbios_for_ip[full_ip].issubset(persistent_netbios_for_ip[full_ip]):
-			#		netbios_cache_updates_needed.append(full_ip)
-			#elif full_ip in processpacket.netbios_for_ip:
-			#	hints_list.append('NB:' + str(processpacket.netbios_for_ip[full_ip]))
-			#	netbios_cache_updates_needed.append(full_ip)
-			#elif full_ip in persistent_netbios_for_ip:
-			#	hints_list.append('NB:' + str(persistent_netbios_for_ip[full_ip]))
-			#FIXME - remove above, replaced by below
-			netbios_hostname_list = select_key(ip_netbios_db, full_ip)
-			if netbios_hostname_list:
-				hints_list.append('NB:' + str(netbios_hostname_list))
+			##FIXME - break into NB: (queried) and nb: (historic)  (still needed?)
+			if ip_netbios_db:
+				netbios_hostname_list = select_key(ip_netbios_db, full_ip)
+				if netbios_hostname_list:
+					hints_list.append('NB:' + str(netbios_hostname_list))
 
 
-			#FIXME - break into DNS: (queried) and dns: (historic) by dropping next block entirely...
-			#if full_ip in processpacket.dns_for_ip and full_ip in persistent_dns_for_ip:
-			#	if display_uuid_hosts:
-			#		orig_ip_list = processpacket.dns_for_ip[full_ip].union(persistent_dns_for_ip[full_ip])
-			#	else:
-			#		orig_ip_list = [x for x in processpacket.dns_for_ip[full_ip].union(persistent_dns_for_ip[full_ip]) if not re.match(uuid_match, x)]
-			#	if orig_ip_list:
-			#		hints_list.append('DNS:' + str(orig_ip_list))
-			#	if not processpacket.dns_for_ip[full_ip].issubset(persistent_dns_for_ip[full_ip]):
-			#		dns_cache_updates_needed.append(full_ip)
-
-			#if full_ip in processpacket.dns_for_ip:
-			#	#Display hostnames we looked up in this session.
-			#	if display_uuid_hosts:
-			#		orig_ip_list = processpacket.dns_for_ip[full_ip]
-			#	else:
-			#		orig_ip_list = [x for x in processpacket.dns_for_ip[full_ip] if not re.match(uuid_match, x)]
-			#	if orig_ip_list:
-			#		hints_list.append('DNS:' + str(orig_ip_list))
-			#	dns_cache_updates_needed.append(full_ip)
-			#	recent_lookup_set = set(orig_ip_list)
-			#else:
-			#	recent_lookup_set = set()
-			#FIXME - remove above, replaced by below
-			all_hostnames = select_key(ip_hostnames_db[0], full_ip)
+			#FIXME - break into DNS: (queried) and dns: (historic) by dropping next block entirely... (still needed?)
+			if ip_hostnames_db:
+				all_hostnames = select_key(ip_hostnames_db[0], full_ip)
+			else:
+				all_hostnames = []
 			if all_hostnames:
 				#Display recent hostnames.
 				if display_uuid_hosts:
@@ -790,19 +737,6 @@ def print_stats(mincount_to_show, minsize_to_show, out_format, source_string):
 			else:
 				recent_lookup_set = set()
 
-
-			#if full_ip in persistent_dns_for_ip:
-			#	#Display any hostnames that have been cached but not looked up in this session.
-			#	if display_uuid_hosts:
-			#		orig_ip_list = persistent_dns_for_ip[full_ip]
-			#	else:
-			#		orig_ip_list = [x for x in persistent_dns_for_ip[full_ip] if not re.match(uuid_match, x)]
-			#	if orig_ip_list:
-			#		#Remove dns_for_ip entries from this so we show just not-recently-looked-up hostnames after "dns:"
-			#		just_old_hostnames = set(orig_ip_list) - recent_lookup_set
-			#		if just_old_hostnames:
-			#			hints_list.append('dns:' + str(list(just_old_hostnames)))
-			#FIXME - remove above, replaced by below
 			if len(ip_hostnames_db) > 1:		#Note, this only handles case of [current, archive], not with multiple archive dbs
 				old_hostnames = select_key(ip_hostnames_db[1], full_ip)
 				if old_hostnames:
@@ -817,88 +751,38 @@ def print_stats(mincount_to_show, minsize_to_show, out_format, source_string):
 						if just_old_hostnames:
 							hints_list.append('dns:' + str(list(just_old_hostnames)))
 
-			if inc_stats.p_stats[one_key][0] >= mincount_to_show and inc_stats.p_stats[one_key][1] >= minsize_to_show:
-				if orig_ip in processpacket.local_ips:
+			if inc_stats.p_stats[one_key][0] >= mincount_to_show and inc_stats.p_stats[one_key][1] >= minsize_to_show:	# type: ignore
+				if orig_ip in processpacket.local_ips:					# type: ignore
 					hints_list.insert(0, 'local')
 
-					for one_mac in processpacket.ipv4s_for_mac.keys():
-						if orig_ip in processpacket.ipv4s_for_mac[one_mac] and len(processpacket.ipv4s_for_mac[one_mac]) > 10:
-							hints_list.insert(1, 'ipv4router:' + str(list(processpacket.ipv4s_for_mac[one_mac])[0:10]) + '..., ' + str(len(processpacket.ipv4s_for_mac[one_mac])) + ' entries.')
-						elif orig_ip in processpacket.ipv4s_for_mac[one_mac] and len(processpacket.ipv4s_for_mac[one_mac]) > 1:
-							hints_list.insert(1, 'ipv4router:' + str(processpacket.ipv4s_for_mac[one_mac]))
-					for one_mac in processpacket.ipv6s_for_mac.keys():
-						if orig_ip in processpacket.ipv6s_for_mac[one_mac] and len(processpacket.ipv6s_for_mac[one_mac]) > 10:
-							hints_list.insert(1, 'ipv6router:' + str(list(processpacket.ipv6s_for_mac[one_mac])[0:10]) + '..., ' + str(len(processpacket.ipv6s_for_mac[one_mac])) + ' entries.')
-						elif orig_ip in processpacket.ipv6s_for_mac[one_mac] and len(processpacket.ipv6s_for_mac[one_mac]) > 1:
-							hints_list.insert(1, 'ipv6router:' + str(processpacket.ipv6s_for_mac[one_mac]))
+					for _, ipv4_set in processpacket.ipv4s_for_mac.items():		# type: ignore #_ was originally one_mac, but we don't actually use it.
+						if orig_ip in ipv4_set and len(ipv4_set) > 10:
+							hints_list.insert(1, 'ipv4router:' + str(list(ipv4_set)[0:10]) + '..., ' + str(len(ipv4_set)) + ' entries.')
+						elif orig_ip in ipv4_set and len(ipv4_set) > 1:
+							hints_list.insert(1, 'ipv4router:' + str(ipv4_set))
+					for _, ipv6_set in processpacket.ipv6s_for_mac.items():		# type: ignore
+						if orig_ip in ipv6_set and len(ipv6_set) > 10:
+							hints_list.insert(1, 'ipv6router:' + str(list(ipv6_set)[0:10]) + '..., ' + str(len(ipv6_set)) + ' entries.')
+						elif orig_ip in ipv6_set and len(ipv6_set) > 1:
+							hints_list.insert(1, 'ipv6router:' + str(ipv6_set))
 
 				try:
 					if out_format == 'html':
-						print("<tr><td align=right>{0:}</td><td align=right>{1}</td><td>{2}</td><td>{3}</td><td>{4}</td></tr>".format(inc_stats.p_stats[one_key][0], inc_stats.p_stats[one_key][1], desc, processpacket.field_filter.get(one_key, ''), hints_for(desc, hints_list)))
+						print("<tr><td align=right>{0:}</td><td align=right>{1}</td><td>{2}</td><td>{3}</td><td>{4}</td></tr>".format(inc_stats.p_stats[one_key][0], inc_stats.p_stats[one_key][1], desc, processpacket.field_filter.get(one_key, ''), hints_for(desc, hints_list)))	# type: ignore # pylint: disable=consider-using-f-string
 					elif out_format == 'ascii':
-						print("{0:>10d} {1:>13d} {2:60s} {3:48s} {4:30s}".format(inc_stats.p_stats[one_key][0], inc_stats.p_stats[one_key][1], desc, processpacket.field_filter.get(one_key, ''), hints_for(desc, hints_list)))
+						print("{0:>10d} {1:>13d} {2:60s} {3:48s} {4:30s}".format(inc_stats.p_stats[one_key][0], inc_stats.p_stats[one_key][1], desc, processpacket.field_filter.get(one_key, ''), hints_for(desc, hints_list)))								# type: ignore # pylint: disable=consider-using-f-string
 				except BrokenPipeError:
 					sys.exit(0)
 		if out_format == 'html':
 			print('</table>')
 			print('</body></html>')
 
-
-		#if dns_cache_state:
-		#	persistent_dns_for_ip.close()
-		#FIXME - remove above
-
-		#if netbios_cache_state:
-		#	persistent_netbios_for_ip.close()
-		#FIXME - remove above
-
-		#if dns_cache_updates_needed:
-		#	try:
-		#		persistent_dns_for_ip = shelve.open(ip_names_cache, writeback=True)
-		#		dns_cache_state = 'readwrite'
-
-		#		for full_ip in dns_cache_updates_needed:
-		#			if full_ip in persistent_dns_for_ip:
-		#				new_hostlist = processpacket.dns_for_ip[full_ip].union(persistent_dns_for_ip[full_ip])
-		#				if len(new_hostlist.symmetric_difference(persistent_dns_for_ip[full_ip])) > 0:
-		#					#The old and new set are different - write out the new hostlist.
-		#					debug_out(str(full_ip) + ': ' + str(new_hostlist))
-		#					persistent_dns_for_ip[full_ip] = new_hostlist
-		#			else:
-		#				#There was no old hostlist, so write the new one out unconditionally.
-		#				new_hostlist = processpacket.dns_for_ip[full_ip]
-		#				debug_out(str(full_ip) + ': ' + str(new_hostlist))
-		#				persistent_dns_for_ip[full_ip] = new_hostlist
-
-		#		persistent_dns_for_ip.close()
-		#	except:
-		#		debug_out('Unable to open ip_names cache for writing')
-		#FIXME - remove above
-
-		#if netbios_cache_updates_needed:
-		#	try:
-		#		persistent_netbios_for_ip = shelve.open(netbios_names_cache, writeback=True)
-		#		netbios_cache_state = 'readwrite'
-
-		#		for full_ip in netbios_cache_updates_needed:
-		#			if full_ip in persistent_netbios_for_ip:
-		#				new_hostlist = processpacket.netbios_for_ip[full_ip].union(persistent_netbios_for_ip[full_ip])
-		#			else:
-		#				new_hostlist = processpacket.netbios_for_ip[full_ip]
-		#			debug_out(str(full_ip) + ': ' + str(new_hostlist))
-		#			persistent_netbios_for_ip[full_ip] = new_hostlist
-
-		#		persistent_netbios_for_ip.close()
-		#	except:
-		#		debug_out('Unable to open ip_names cache for writing')
-		#FIXME - remove above
-
 	else:
 		sys.stderr.write('It does not appear any packets were read.  Exiting.\n')
 		sys.stderr.flush()
 
 
-def process_packet_source(if_name, pcap_source, user_args):
+def process_packet_source(if_name: Optional[str], pcap_source: Optional[str], user_args: dict):
 	"""Process the packets in a single source file, interface, or stdin."""
 
 	source_file = None
@@ -917,7 +801,7 @@ def process_packet_source(if_name, pcap_source, user_args):
 			sys.stderr.write("Unable to open interface " + str(if_name) + ' .  Permission error?  Perhaps runs as root or under sudo?  Exiting.\n')
 			raise
 	#Read from stdin
-	elif pcap_source in ('-', None):
+	elif pcap_source in ('-', None, ''):
 		debug_out('Reading packets from stdin.')
 		tmp_packets = tempfile.NamedTemporaryFile(delete=True)											# pylint: disable=consider-using-with
 		tmp_packets.write(sys.stdin.buffer.read())
@@ -925,16 +809,16 @@ def process_packet_source(if_name, pcap_source, user_args):
 		source_file = tmp_packets.name
 		close_temp = True
 	#Set up source packet file; next 2 sections check for and handle compressed file extensions first, then final "else" treats the source as a pcap file
-	elif pcap_source.endswith('.bz2'):
-		debug_out('Reading bzip2 compressed packets from file ' + pcap_source)
-		source_file = open_bzip2_file_to_tmp_file(pcap_source)
+	elif cast(str, pcap_source).endswith('.bz2'):
+		debug_out('Reading bzip2 compressed packets from file ' + cast(str, pcap_source))
+		source_file = open_bzip2_file_to_tmp_file(cast(str, pcap_source))
 		delete_temp = True
-	elif pcap_source.endswith('.gz'):
-		debug_out('Reading gzip compressed packets from file ' + pcap_source)
-		source_file = open_gzip_file_to_tmp_file(pcap_source)
+	elif cast(str, pcap_source).endswith('.gz'):
+		debug_out('Reading gzip compressed packets from file ' + cast(str, pcap_source))
+		source_file = open_gzip_file_to_tmp_file(cast(str, pcap_source))
 		delete_temp = True
 	else:
-		debug_out('Reading packets from file ' + pcap_source)
+		debug_out('Reading packets from file ' + cast(str, pcap_source))
 		source_file = pcap_source
 
 	#Try to process file first
@@ -954,8 +838,8 @@ def process_packet_source(if_name, pcap_source, user_args):
 	if close_temp:
 		tmp_packets.close()
 
-	if delete_temp and source_file != pcap_source and os.path.exists(source_file):
-		os.remove(source_file)
+	if delete_temp and source_file != pcap_source and os.path.exists(cast(str, source_file)):
+		os.remove(cast(str, source_file))
 
 
 
@@ -1049,9 +933,6 @@ ignore_layers = ('DHCP options',
 
 cache_dir = os.environ["HOME"] + '/.cache/'
 
-#FIXME - REMOVEME
-#ip_names_cache = os.environ["HOME"] + '/.cache/ip_names'
-#netbios_names_cache = os.environ["HOME"] + '/.cache/netbios_names'
 
 if __name__ == '__main__':
 	import argparse
@@ -1070,8 +951,6 @@ if __name__ == '__main__':
 	parser.add_argument('--archive_dir', help='Directory that holds read-only older sqlite databases for IP and hostname info', required=False, default=cache_dir + '/ip_archive/')
 	(parsed, unparsed) = parser.parse_known_args()
 	cl_args = vars(parsed)
-
-	#debug_out("BPF we'll use is: " + cl_args['bpf'])
 
 	#We have to use libpcap instead of scapy's built-in code because the latter won't attach complex bpfs
 	try:
@@ -1128,7 +1007,7 @@ if __name__ == '__main__':
 		buffer_merges('', '', [], 0)
 
 	if 'dns_for_ip' in processpacket.__dict__:
-		add_to_db_dict(ip_hostnames_db, processpacket.dns_for_ip)		#Save all the buffered up ip->hostname_lists in the writeable database
+		add_to_db_dict(ip_hostnames_db, processpacket.dns_for_ip)				# type: ignore	#Save all the buffered up ip->hostname_lists in the writeable database
 
 
 	buffer_merges('', '', [], 0)
