@@ -23,9 +23,12 @@
 from __future__ import print_function
 
 import ipaddress
+import os
+import re
 import string
 import json
 import tempfile		#Used in processing compressed files
+from typing import Pattern
 import gzip		#Lets us read gzip compressed files
 import bz2		#Lets us read bzip2 compressed files
 import errno
@@ -111,8 +114,8 @@ sip_altport = (
 
 
 #======== Regexes ========
-SIPFromMatch = re.compile('From:[^<]*<sip:([a-zA-Z0-9_\.-]+)@([a-zA-Z0-9:_\.-]+)[;>]')		#https://en.wikipedia.org/wiki/SIP_URI_scheme
-SIPToMatch = re.compile('To:[^<]*<sip:([a-zA-Z0-9_\.-]+)@([a-zA-Z0-9:_\.-]+)[;>]')
+SIPFromMatch: Pattern = re.compile('From:[^<]*<sip:([a-zA-Z0-9_\.-]+)@([a-zA-Z0-9:_\.-]+)[;>]')		#https://en.wikipedia.org/wiki/SIP_URI_scheme
+SIPToMatch: Pattern = re.compile('To:[^<]*<sip:([a-zA-Z0-9_\.-]+)@([a-zA-Z0-9:_\.-]+)[;>]')
 
 
 #======== Misc ========
@@ -149,7 +152,7 @@ include_udp_errors_in_closed_ports = False	#If True, we look at unreachables and
 
 
 #======== Variables ========
-passer_lib_version = '0.28'
+passer_lib_version = '0.30'
 
 #Indexes into the tuple used in passing data to the output handler.  _e is for "enumerated"
 Type_e = 0
@@ -201,10 +204,10 @@ def force_string(raw_string):
 def extract_len_string(len_encoded_string):
 	"""Assumes byte 0 is a length, followed by a string of that
 	length (1-255 bytes).  Returns that string and the remainder of
-	the len_enocded_string after the first string has been removed.
-	Example call: cpu, remainder = extract_len_string(hinfo_payload)
-	gives back "ARMV7L" and "\x05LINUX" for another round of
-	extraction."""
+	the len_enocded_string after the first string has been removed."""
+	#Example call: cpu, remainder = extract_len_string(hinfo_payload)
+	#gives back "ARMV7L" and "\x05LINUX" for another round of
+	#extraction.  (pdoc3 and PDF/markdown processing can't ingest the \x05LINUX)
 
 
 	ret_str = ''
@@ -718,7 +721,7 @@ def SuspiciousPacket(sp_packet, prefs, dests):
 
 	if dests['suspicious'] is None:
 		pass
-	elif type(dests['suspicious']) is str:
+	elif isinstance(dests['suspicious'], str):
 		if "suspicious_h" not in SuspiciousPacket.__dict__:
 			SuspiciousPacket.suspicious_h = None
 			if dests['suspicious']:
@@ -742,7 +745,7 @@ def UnhandledPacket(up_packet, prefs, dests):
 
 	if dests['unhandled'] is None:
 		pass
-	elif type(dests['unhandled']) is str:
+	elif isinstance(dests['unhandled'], str):
 		if "unhandled_h" not in UnhandledPacket.__dict__:
 			UnhandledPacket.unhandled_h = None
 			if dests['unhandled']:
@@ -1678,6 +1681,8 @@ def DNS_extract(p, meta, prefs, dests):
 										state_set.add(("IP", meta['sIP'], "IP", "Google Cloud Print server", '', ()))
 									elif rdata_string in ('_raop.', '_raop._tcp.', '_raop._tcp.local.'):				#https://blog.hyperiongray.com/multicast-dns-service-discovery/
 										state_set.add(("IP", meta['sIP'], "IP", 'AirTunes not confirmed', '', ()))
+									elif rdata_string in ('_rdlink.', '_rdlink._tcp.', '_rdlink._tcp.local.'):			#https://discussions.apple.com/thread/8190071?page=3
+										state_set.add(("IP", meta['sIP'], "IP", 'Rapportd not confirmed', '', ()))
 									elif rdata_string in ('_remotemouse.', '_remotemouse._tcp.', '_remotemouse._tcp.local.'):	#https://www.informatics.indiana.edu/xw7/papers/bai2016staying.pdf  https://itunes.apple.com/us/app/remote-mouse/id403195710?mt=12  http://www.remotemouse.net/
 										state_set.add(("TS", meta['sIP'], "TCP_1978", "listening", 'remotemouse/server not confirmed', ()))
 										state_set.add(("US", meta['sIP'], "UDP_1978", "listening", 'remotemouse/server not confirmed', ()))
